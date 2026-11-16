@@ -70,8 +70,6 @@ interface AdminDashboardModalProps {
     hasAccountsSync: boolean;
     message: string;
   }>;
-  onSyncFromSheets?: () => Promise<{ success: boolean; message: string }>;
-  isSyncingSheets?: boolean;
   onOpenReceipt?: (record: KostPaymentRecord | ElectricityRecord, type: 'kost' | 'electricity') => void;
 }
 
@@ -88,8 +86,6 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
   onUpdateTenant,
   isGoogleSheetAccountSyncReady,
   onSyncAllAccountsToSheets,
-  onSyncFromSheets,
-  isSyncingSheets = false,
   onOpenReceipt,
 }) => {
   const [activeTab, setActiveTab] = useState<'verifikasi' | 'penghuni' | 'akun' | 'rekap'>(initialTab);
@@ -397,24 +393,12 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
         setToastData({
           type: 'warning',
           title: 'Perlu Update Kode Google Apps Script (Kode.gs)',
-          message: 'Google Apps Script Anda belum mendukung tab AKUN_LOGIN_KAMAR. Silakan klik menu "Google Sheet", salin kode terbaru ke Kode.gs, lalu Deploy Versi Baru.',
+          message: 'Google Apps Script Anda belum mendukung tab AKUN_LOGIN_KAMAR. Silakan klik menu "Google Sheet", salin kode V2.10 terbaru ke Kode.gs, lalu Deploy Versi Baru.',
         });
       }
     } finally {
       setIsSyncingAllAccounts(false);
     }
-  };
-
-  const handlePullPasswordsFromSheets = async () => {
-    if (!onSyncFromSheets || isSyncingSheets) return;
-    const res = await onSyncFromSheets();
-    setToastData({
-      type: res.success ? 'success' : 'warning',
-      title: res.success
-        ? 'Password & Data Kamar Diperbarui dari Google Sheet!'
-        : 'Gagal Menarik Data dari Google Sheet',
-      message: res.message,
-    });
   };
 
   const openEditProfileModal = (t: TenantProfile) => {
@@ -1567,18 +1551,6 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
               </div>
 
               <div className="flex items-center gap-2 flex-wrap">
-                {onSyncFromSheets && (
-                  <button
-                    type="button"
-                    onClick={handlePullPasswordsFromSheets}
-                    disabled={isSyncingSheets}
-                    className="px-3.5 py-2 rounded-lg bg-white hover:bg-slate-100 disabled:opacity-60 text-indigo-700 border border-indigo-200 text-xs font-bold flex items-center gap-1.5 transition-colors shadow-2xs cursor-pointer"
-                    title="Muat ulang akun & password terbaru langsung dari tab AKUN_LOGIN_KAMAR di Google Sheet"
-                  >
-                    <RefreshCw className={`w-4 h-4 ${isSyncingSheets ? 'animate-spin' : ''}`} />
-                    <span>{isSyncingSheets ? 'Memuat...' : 'Tarik dari Google Sheet'}</span>
-                  </button>
-                )}
                 {onSyncAllAccountsToSheets && (
                   <button
                     type="button"

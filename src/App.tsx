@@ -23,9 +23,7 @@ import {
 import {
   recalculateTenantsWithSheetData,
   isDummySeedPaymentId,
-  normalizeRoomDigits,
 } from './utils/paymentStatusCalculator';
-import { sanitizeAuthInput } from './utils/authHelper';
 import {
   safeStorageGet,
   safeStorageSet,
@@ -229,11 +227,11 @@ export default function App() {
 
   const [currentTenant, setCurrentTenant] = useState<TenantProfile>(() => {
     if (authSession?.role === 'tenant' && authSession.tenantId) {
-      const match = tenants.find((t) => t.id === authSession.tenantId);
+      const match = DEFAULT_TENANTS.find((t) => t.id === authSession.tenantId);
       if (match) return match;
     }
-    const defaultArya = tenants.find((t) => t.name.includes('ARYA WICAKSANA'));
-    return defaultArya || tenants[0] || DEFAULT_TENANTS[0];
+    const defaultArya = DEFAULT_TENANTS.find((t) => t.name.includes('ARYA WICAKSANA'));
+    return defaultArya || DEFAULT_TENANTS[0];
   });
 
   const [kostPayments, setKostPayments] = useState<KostPaymentRecord[]>(() => {
@@ -487,23 +485,6 @@ export default function App() {
   const [isGoogleSheetAccountSyncReady, setIsGoogleSheetAccountSyncReady] = useState<boolean | null>(
     null
   );
-  const [hasSyncedSheetsOnce, setHasSyncedSheetsOnce] = useState<boolean>(false);
-  const hasAutoSeededAccountsRef = useRef<boolean>(false);
-  const tenantsRef = useRef<TenantProfile[]>(tenants);
-  const kostPaymentsRef = useRef<KostPaymentRecord[]>(kostPayments);
-  const electricityPaymentsRef = useRef<ElectricityRecord[]>(electricityPayments);
-
-  useEffect(() => {
-    tenantsRef.current = tenants;
-  }, [tenants]);
-
-  useEffect(() => {
-    kostPaymentsRef.current = kostPayments;
-  }, [kostPayments]);
-
-  useEffect(() => {
-    electricityPaymentsRef.current = electricityPayments;
-  }, [electricityPayments]);
 
   const handleUpdateTenant = async (
     updated: TenantProfile
@@ -514,11 +495,13 @@ export default function App() {
     message: string;
   }> => {
     lastAccountEditAtRef.current[updated.id] = Date.now();
-    const updatedListSnapshot = tenantsRef.current.map((t) => (t.id === updated.id ? updated : t));
-    tenantsRef.current = updatedListSnapshot;
-    let nextTenantsSnapshot: TenantProfile[] = updatedListSnapshot;
-    setTenants(updatedListSnapshot);
-    safeStorageSet('kostpay_tenants_v6', JSON.stringify(updatedListSnapshot));
+    let nextTenantsSnapshot: TenantProfile[] = [];
+    setTenants((prev) => {
+      const updatedList = prev.map((t) => (t.id === updated.id ? updated : t));
+      nextTenantsSnapshot = updatedList;
+      safeStorageSet('kostpay_tenants_v6', JSON.stringify(updatedList));
+      return updatedList;
+    });
     if (currentTenant.id === updated.id) {
       setCurrentTenant(updated);
     }
@@ -716,8 +699,6 @@ export default function App() {
     success: boolean;
     hasSchedulesSync?: boolean;
     hasPaymentsSync?: boolean;
-    hasAccountsSync?: boolean;
-    tenants?: TenantProfile[];
     message: string;
   }> => {
     if (!settings.googleWebAppUrl) {
@@ -726,26 +707,25 @@ export default function App() {
     setIsSyncingSheets(true);
     try {
       const res = await fetchRoomRatesFromGoogleSheets(settings.googleWebAppUrl);
-      let syncedTenantsSnapshot: TenantProfile[] | undefined;
-
       if (res.success) {
         setIsGoogleSheetAccountSyncReady(Boolean(res.hasAccountsSync));
-        let nextKostPayments = kostPaymentsRef.current;
-        let nextElectricityPayments = electricityPaymentsRef.current;
+        let nextKostPayments = kostPayments;
+        let nextElectricityPayments = electricityPayments;
 
         // Sinkronisasi data Pembayaran Sewa dari Google Sheet (jika tersedia dari endpoint doGet)
         if (Array.isArray(res.kostPayments)) {
           const sheetKostList = res.kostPayments.filter((p) => p && !isDummySeedPaymentId(p.id));
-          const sheetIds = new Set(sheetKostList.map((p) => p.id));
-          // Pertahankan transaksi pending lokal yang baru dikirim dan belum masuk di pembacaan sheet
-          const localPending = kostPaymentsRef.current.filter(
-            (p) => p.status === 'pending' && !sheetIds.has(p.id) && !isDummySeedPaymentId(p.id)
-          );
-          const mergedKost = [...localPending, ...sheetKostList];
-          nextKostPayments = mergedKost;
-          kostPaymentsRef.current = mergedKost;
-          setKostPayments(mergedKost);
-          safeSaveRecordsToStorage('kostpay_kost_payments_v2', mergedKost);
+          setKostPayments((prev) => {
+            const sheetIds = new Set(sheetKostList.map((p) => p.id));
+            // Pertahankan transaksi pending lokal yang baru dikirim dan belum masuk di pembacaan sheet
+            const localPending = prev.filter(
+              (p) => p.status === 'pending' && !sheetIds.has(p.id) && !isDummySeedPaymentId(p.id)
+            );
+            const mergedKost = [...localPending, ...sheetKostList];
+            nextKostPayments = mergedKost;
+            safeSaveRecordsToStorage('kostpay_kost_payments_v2', mergedKost);
+            return mergedKost;
+          });
         }
 
         // Sinkronisasi data Pembayaran Listrik dari Google Sheet (jika tersedia dari endpoint doGet)
@@ -753,102 +733,60 @@ export default function App() {
           const sheetElecList = res.electricityPayments.filter(
             (p) => p && !isDummySeedPaymentId(p.id)
           );
-          const sheetIds = new Set(sheetElecList.map((p) => p.id));
-          const localPending = electricityPaymentsRef.current.filter(
-            (p) => p.status === 'pending' && !sheetIds.has(p.id) && !isDummySeedPaymentId(p.id)
-          );
-          const mergedElec = [...localPending, ...sheetElecList];
-          nextElectricityPayments = mergedElec;
-          electricityPaymentsRef.current = mergedElec;
-          setElectricityPayments(mergedElec);
-          safeSaveRecordsToStorage('kostpay_elec_payments_v2', mergedElec);
+          setElectricityPayments((prev) => {
+            const sheetIds = new Set(sheetElecList.map((p) => p.id));
+            const localPending = prev.filter(
+              (p) => p.status === 'pending' && !sheetIds.has(p.id) && !isDummySeedPaymentId(p.id)
+            );
+            const mergedElec = [...localPending, ...sheetElecList];
+            nextElectricityPayments = mergedElec;
+            safeSaveRecordsToStorage('kostpay_elec_payments_v2', mergedElec);
+            return mergedElec;
+          });
         }
 
-        // Perbarui tarif kamar, akun login (dari Google Sheet), & hitung ulang status sewa dan listrik secara sinkron
-        const rateMerged = tenantsRef.current.map((t) => {
-          const match = res.rates?.find(
-            (r) =>
-              normalizeRoomDigits(r.roomNumber) === normalizeRoomDigits(t.roomNumber) &&
-              (!r.kostLocation || r.kostLocation === t.kostLocation)
-          );
-          if (match) {
-            const recentEditAt = lastAccountEditAtRef.current[t.id] || 0;
-            const isRecentlyEdited = Date.now() - recentEditAt < 45000;
-            const sheetUser = match.username ? sanitizeAuthInput(match.username) : '';
-            const sheetPass = match.password ? sanitizeAuthInput(match.password) : '';
-            return {
-              ...t,
-              monthlyRentRate:
-                match.monthlyRentRate && match.monthlyRentRate > 0
-                  ? match.monthlyRentRate
-                  : t.monthlyRentRate,
-              rentDueDateDay: match.rentDueDateDay || t.rentDueDateDay,
-              username: isRecentlyEdited ? t.username : sheetUser || t.username,
-              password: isRecentlyEdited ? t.password : sheetPass || t.password,
-              phone: match.phone !== undefined ? match.phone : t.phone,
-              isOccupied: match.isOccupied !== undefined ? match.isOccupied : t.isOccupied,
-            };
-          }
-          return t;
-        });
-
-        const recalculated = recalculateTenantsWithSheetData(
-          rateMerged,
-          nextKostPayments,
-          nextElectricityPayments,
-          new Date()
-        );
-
-        syncedTenantsSnapshot = recalculated;
-        tenantsRef.current = recalculated;
-        setTenants(recalculated);
-        safeStorageSet('kostpay_tenants_v6', JSON.stringify(recalculated));
-        setCurrentTenant((prevCurrent) => {
-          const updatedCurrent = recalculated.find((t) => t.id === prevCurrent.id);
-          return updatedCurrent || prevCurrent;
-        });
-        setHasSyncedSheetsOnce(true);
-
-        // Jika login sebagai Admin dan masih ada kamar yang belum tercatat di tab AKUN_LOGIN_KAMAR,
-        // lengkapi baris yang kosong tanpa pernah menimpa password yang sudah ada di Google Sheet.
-        if (
-          authSession?.role === 'admin' &&
-          res.hasAccountsSync &&
-          !hasAutoSeededAccountsRef.current &&
-          Array.isArray(res.rates)
-        ) {
-          hasAutoSeededAccountsRef.current = true;
-          const missingAccounts = recalculated.filter((t) => {
+        // Perbarui tarif kamar, akun login (jika disinkronkan), & hitung ulang status sewa dan listrik
+        setTenants((prevTenants) => {
+          const rateMerged = prevTenants.map((t) => {
             const match = res.rates?.find(
               (r) =>
-                normalizeRoomDigits(r.roomNumber) === normalizeRoomDigits(t.roomNumber) &&
+                r.roomNumber.toString().trim() === t.roomNumber.toString().trim() &&
                 (!r.kostLocation || r.kostLocation === t.kostLocation)
             );
-            return !match?.password || !sanitizeAuthInput(match.password);
+            if (match) {
+              const recentEditAt = lastAccountEditAtRef.current[t.id] || 0;
+              const isRecentlyEdited = Date.now() - recentEditAt < 45000;
+              return {
+                ...t,
+                monthlyRentRate:
+                  match.monthlyRentRate && match.monthlyRentRate > 0
+                    ? match.monthlyRentRate
+                    : t.monthlyRentRate,
+                rentDueDateDay: match.rentDueDateDay || t.rentDueDateDay,
+                username: isRecentlyEdited ? t.username : match.username || t.username,
+                password: isRecentlyEdited ? t.password : match.password || t.password,
+                phone: match.phone !== undefined ? match.phone : t.phone,
+                isOccupied: match.isOccupied !== undefined ? match.isOccupied : t.isOccupied,
+              };
+            }
+            return t;
           });
-          if (missingAccounts.length > 0) {
-            const targetUrl = settings.googleWebAppUrl || PERMANENT_GOOGLE_WEBAPP_URL;
-            sendToGoogleSheets(targetUrl, {
-              action: 'sync_all_room_accounts',
-              rates: missingAccounts.map((t) => ({
-                kostLocation: t.kostLocation || 'acarya_1',
-                roomNumber: t.roomNumber,
-                tenantName:
-                  t.isOccupied && t.name && t.name !== '-' && !t.name.toLowerCase().includes('tersedia')
-                    ? t.name
-                    : `Kamar ${t.roomNumber} (Tersedia)`,
-                monthlyRentRate: t.monthlyRentRate,
-                rentDueDateDay: t.rentDueDateDay,
-                username: t.username || `kamar${t.roomNumber}`,
-                password: t.password,
-                phone: t.phone,
-                isOccupied: t.isOccupied,
-              })),
-            }).catch(() => {
-              hasAutoSeededAccountsRef.current = false;
-            });
-          }
-        }
+
+          const recalculated = recalculateTenantsWithSheetData(
+            rateMerged,
+            nextKostPayments,
+            nextElectricityPayments,
+            new Date()
+          );
+
+          safeStorageSet('kostpay_tenants_v6', JSON.stringify(recalculated));
+          setCurrentTenant((prevCurrent) => {
+            const updatedCurrent = recalculated.find((t) => t.id === prevCurrent.id);
+            return updatedCurrent || prevCurrent;
+          });
+
+          return recalculated;
+        });
 
         // Sinkronisasi data jadwal dari Google Sheet, dengan tetap menyembunyikan jadwal selesai yang sudah dihapus dari tampilan WebApp
         const hiddenIds = getHiddenScheduleIds();
@@ -881,8 +819,6 @@ export default function App() {
         success: res.success,
         hasSchedulesSync: res.hasSchedulesSync,
         hasPaymentsSync: res.hasPaymentsSync,
-        hasAccountsSync: res.hasAccountsSync,
-        tenants: syncedTenantsSnapshot,
         message: res.message,
       };
     } catch (err: any) {
@@ -929,13 +865,6 @@ export default function App() {
   };
 
   const hasInitialSyncedRef = useRef(false);
-
-  // Saat Admin masuk, sinkronkan dan pastikan seluruh 29 akun kamar terhubung dengan Google Sheet
-  useEffect(() => {
-    if (authSession?.role === 'admin' && !hasAutoSeededAccountsRef.current && settings.googleWebAppUrl) {
-      handleSyncAllFromGoogleSheets();
-    }
-  }, [authSession?.role]);
 
   // Auto-sync dari Google Sheet saat aplikasi pertama kali dibuka (tanpa mendorong data dummy ke Google Sheet)
   useEffect(() => {
@@ -1767,16 +1696,6 @@ export default function App() {
           setAuthSession(session);
         }}
         selectedLocation={selectedLocation}
-        onSyncFromSheets={async () => {
-          const r = await handleSyncAllFromGoogleSheets();
-          return {
-            tenants: r.tenants || null,
-            success: r.success,
-            message: r.message,
-          };
-        }}
-        isSyncingSheets={isSyncingSheets}
-        hasSyncedSheetsOnce={hasSyncedSheetsOnce}
       />
     );
   }
@@ -1983,8 +1902,6 @@ export default function App() {
             onUpdateTenant={handleUpdateTenant}
             isGoogleSheetAccountSyncReady={isGoogleSheetAccountSyncReady}
             onSyncAllAccountsToSheets={handleSyncAllAccountsToSheets}
-            onSyncFromSheets={handleSyncAllFromGoogleSheets}
-            isSyncingSheets={isSyncingSheets}
             onOpenReceipt={(rec, t) => handleOpenReceipt(rec, t, false)}
           />
         )}

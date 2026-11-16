@@ -2022,8 +2022,6 @@ function readAllRoomRates(rateSheet, ss) {
   var colIdxRate = 3;
   var colIdxDue = 4;
   var colIdxNotes = 5;
-  var colIdxUser = -1;
-  var colIdxPass = -1;
 
   for (var c = 0; c < headerRow.length; c++) {
     var h = String(headerRow[c] || '').toLowerCase();
@@ -2033,8 +2031,6 @@ function readAllRoomRates(rateSheet, ss) {
     else if (h.indexOf('tarif') !== -1 || h.indexOf('sewa') !== -1) colIdxRate = c;
     else if (h.indexOf('tempo') !== -1 || h.indexOf('jatuh') !== -1) colIdxDue = c;
     else if (h.indexOf('catatan') !== -1) colIdxNotes = c;
-    else if (h.indexOf('user') !== -1) colIdxUser = c;
-    else if (h.indexOf('pass') !== -1 || h.indexOf('sandi') !== -1) colIdxPass = c;
   }
 
   var data = rateSheet.getRange(3, 1, lastRow - 2, lastCol).getValues();
@@ -2059,23 +2055,14 @@ function readAllRoomRates(rateSheet, ss) {
     var notes = String(row[colIdxNotes] || '');
 
     if (roomRaw) {
-      var rateObj = {
+      rates.push({
         kostLocation: loc,
         roomNumber: roomRaw,
         tenantName: name,
         monthlyRentRate: rate,
         rentDueDateDay: due,
         notes: notes
-      };
-      if (colIdxUser >= 0) {
-        var inlineUser = String(row[colIdxUser] || '').trim();
-        if (inlineUser) rateObj.username = inlineUser;
-      }
-      if (colIdxPass >= 0) {
-        var inlinePass = String(row[colIdxPass] || '').trim();
-        if (inlinePass) rateObj.password = inlinePass;
-      }
-      rates.push(rateObj);
+      });
     }
   }
 
@@ -2116,29 +2103,16 @@ function readRoomAccountsMap(ss) {
   var map = {};
   var sheet = ss.getSheetByName("AKUN_LOGIN_KAMAR");
   if (!sheet || sheet.getLastRow() < 2) return map;
-  var lastCol = Math.max(sheet.getLastColumn(), 7);
-  var header = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-  var cBranch = 0, cRoom = 1, cUser = 3, cPass = 4, cPhone = 5, cStatus = 6;
-  for (var hc = 0; hc < header.length; hc++) {
-    var hText = String(header[hc] || '').toLowerCase();
-    if (hText.indexOf('cabang') !== -1) cBranch = hc;
-    else if (hText.indexOf('nomor') !== -1 || hText.indexOf('kamar') !== -1) cRoom = hc;
-    else if (hText.indexOf('user') !== -1) cUser = hc;
-    else if (hText.indexOf('pass') !== -1 || hText.indexOf('sandi') !== -1) cPass = hc;
-    else if (hText.indexOf('wa') !== -1 || hText.indexOf('hp') !== -1 || hText.indexOf('telepon') !== -1) cPhone = hc;
-    else if (hText.indexOf('status') !== -1) cStatus = hc;
-  }
-
-  var data = sheet.getRange(2, 1, sheet.getLastRow() - 1, lastCol).getValues();
+  var data = sheet.getRange(2, 1, sheet.getLastRow() - 1, Math.max(sheet.getLastColumn(), 7)).getValues();
   for (var i = 0; i < data.length; i++) {
     var row = data[i];
-    var branchRaw = String(row[cBranch] || '').toLowerCase();
+    var branchRaw = String(row[0] || '').toLowerCase();
     var loc = (branchRaw.indexOf('2') !== -1 || branchRaw.indexOf('dua') !== -1) ? 'acarya_2' : 'acarya_1';
-    var room = extractRoomDigits(row[cRoom]);
-    var username = String(row[cUser] || '').trim();
-    var password = String(row[cPass] || '').trim();
-    var phone = String(row[cPhone] || '').trim();
-    var stRaw = String(row[cStatus] || '').toUpperCase().trim();
+    var room = extractRoomDigits(row[1]);
+    var username = String(row[3] || '').trim();
+    var password = String(row[4] || '').trim();
+    var phone = String(row[5] || '').trim();
+    var stRaw = String(row[6] || '').toUpperCase().trim();
     if (room) {
       map[loc + '_' + room] = {
         username: username || undefined,
@@ -2383,7 +2357,6 @@ function readKostPaymentsFromSheet(ss) {
     'Jadwal_Cek_Kamar': true,
     'Arsip_Foto_Bukti': true,
     'KONTROL_CICILAN_TAHUNAN': true,
-    'AKUN_LOGIN_KAMAR': true,
     'Log_Sistem': true
   };
 
@@ -2527,7 +2500,6 @@ function readElectricityPaymentsFromSheet(ss) {
     'Jadwal_Cek_Kamar': true,
     'Arsip_Foto_Bukti': true,
     'KONTROL_CICILAN_TAHUNAN': true,
-    'AKUN_LOGIN_KAMAR': true,
     'Log_Sistem': true
   };
 

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Building2,
@@ -19,7 +19,6 @@ import {
   Sparkles,
   ArrowRight,
   Info,
-  RefreshCw,
 } from 'lucide-react';
 import { TenantProfile, KostLocation, AuthSession } from '../types';
 import { formatRupiah } from '../utils/whatsappHelper';
@@ -35,22 +34,12 @@ interface LoginPageProps {
   tenants: TenantProfile[];
   onLoginSuccess: (session: AuthSession, tenant?: TenantProfile) => void;
   selectedLocation: KostLocation | 'all';
-  onSyncFromSheets?: () => Promise<{
-    tenants: TenantProfile[] | null;
-    success: boolean;
-    message?: string;
-  }>;
-  isSyncingSheets?: boolean;
-  hasSyncedSheetsOnce?: boolean;
 }
 
 export const LoginPage: React.FC<LoginPageProps> = ({
   tenants,
   onLoginSuccess,
   selectedLocation: initialLocation,
-  onSyncFromSheets,
-  isSyncingSheets = false,
-  hasSyncedSheetsOnce = false,
 }) => {
   const [authTab, setAuthTab] = useState<'tenant' | 'admin'>('tenant');
 
@@ -74,31 +63,9 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   const adminUserRef = useRef<HTMLInputElement>(null);
   const adminPassRef = useRef<HTMLInputElement>(null);
 
-  // Success & live Google Sheet sync state
+  // Success state
   const [isSuccess, setIsSuccess] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
-  const [isVerifyingSheets, setIsVerifyingSheets] = useState(false);
-  const lastSyncAtRef = useRef<number>(hasSyncedSheetsOnce ? Date.now() : 0);
-
-  useEffect(() => {
-    if (hasSyncedSheetsOnce) {
-      lastSyncAtRef.current = Date.now();
-    }
-  }, [hasSyncedSheetsOnce]);
-
-  const syncAccountsNow = async (): Promise<TenantProfile[]> => {
-    if (!onSyncFromSheets) return tenants;
-    try {
-      const res = await onSyncFromSheets();
-      if (res.success && res.tenants && res.tenants.length > 0) {
-        lastSyncAtRef.current = Date.now();
-        return res.tenants;
-      }
-    } catch {
-      // ignore network error and fallback to local cached tenants
-    }
-    return tenants;
-  };
 
   // Help modal for owner to see accounts list (Protected by Admin Password)
   const [isAccountListOpen, setIsAccountListOpen] = useState(false);
@@ -131,7 +98,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
   const handleOpenAccountListRequest = () => {
     if (isValidAdminPasswordOnly(adminPassword)) {
-      syncAccountsNow();
       setIsAccountListOpen(true);
     } else {
       setAdminVerifyPassword('');
@@ -143,7 +109,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   const handleVerifyAdminForAccountList = (e: React.FormEvent) => {
     e.preventDefault();
     if (isValidAdminPasswordOnly(adminVerifyPassword)) {
-      syncAccountsNow();
       setIsAdminVerifyModalOpen(false);
       setAdminVerifyPassword('');
       setAdminVerifyError(null);
@@ -171,10 +136,10 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     }, 450);
   };
 
-  // Handler for tenant login (always checks latest Google Sheet accounts so updated passwords work across all devices)
-  const handleTenantSubmit = async (e: React.FormEvent) => {
+  // Handler for tenant login
+  const handleTenantSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (isSuccess || isVerifyingSheets) return;
+    if (isSuccess) return;
     setTenantError(null);
 
     const rawUserVal = tenantUserRef.current?.value ?? tenantIdentifier;
@@ -203,29 +168,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({
       return;
     }
 
-    const otherBranch: KostLocation = selectedBranch === 'acarya_2' ? 'acarya_1' : 'acarya_2';
-    const cachedBranchMatch = findMatchingTenantInBranch(tenants, inputUser, selectedBranch);
-    const cachedOtherMatch = findMatchingTenantInBranch(tenants, inputUser, otherBranch);
-    const cachedCandidate = cachedBranchMatch || cachedOtherMatch;
-    const cachedPasswordOk = Boolean(
-      cachedCandidate && isTenantPasswordMatch(inputPass, cachedCandidate.password)
-    );
-    const isStaleSync = Date.now() - lastSyncAtRef.current > 10000;
-
-    // Sinkronkan terlebih dahulu dengan Google Sheet jika belum sinkron awal, sudah lewat 10 detik,
-    // atau jika password tidak cocok dengan cache lokal (agar password baru di Google Sheet langsung terbaca).
-    let activeTenants = tenants;
-    if (onSyncFromSheets && (!hasSyncedSheetsOnce || isSyncingSheets || isStaleSync || !cachedPasswordOk)) {
-      setIsVerifyingSheets(true);
-      try {
-        activeTenants = await syncAccountsNow();
-      } finally {
-        setIsVerifyingSheets(false);
-      }
-    }
-
-    // Prioritaskan pencarian di cabang yang sedang dipilih menggunakan data terbaru dari Google Sheet
-    const matchedInBranch = findMatchingTenantInBranch(activeTenants, inputUser, selectedBranch);
+    // Prioritaskan pencarian di cabang yang sedang dipilih
+    const matchedInBranch = findMatchingTenantInBranch(tenants, inputUser, selectedBranch);
     if (matchedInBranch && isTenantPasswordMatch(inputPass, matchedInBranch.password)) {
       completeLoginTransition(
         `Selamat datang, ${matchedInBranch.name} (Kamar ${matchedInBranch.roomNumber})!`,
@@ -243,7 +187,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     }
 
     // Fallback pintar untuk pengguna HP yang lupa memindahkan tombol cabang (Acarya 1 vs Acarya 2)
-    const matchedInOtherBranch = findMatchingTenantInBranch(activeTenants, inputUser, otherBranch);
+    const otherBranch: KostLocation = selectedBranch === 'acarya_2' ? 'acarya_1' : 'acarya_2';
+    const matchedInOtherBranch = findMatchingTenantInBranch(tenants, inputUser, otherBranch);
     if (matchedInOtherBranch && isTenantPasswordMatch(inputPass, matchedInOtherBranch.password)) {
       setSelectedBranch(otherBranch);
       completeLoginTransition(
@@ -266,7 +211,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     const activeTarget = matchedInBranch || matchedInOtherBranch;
     if (!activeTarget) {
       setTenantError(
-        `Kamar/Username "${sanitizeAuthInput(rawUserVal)}" tidak ditemukan di ${
+        `Kamar/Username "${sanitizeAuthInput(tenantIdentifier)}" tidak ditemukan di ${
           selectedBranch === 'acarya_2' ? 'Acarya Kost 2' : 'Acarya Kost 1'
         }. Periksa kembali nomor kamar Anda.`
       );
@@ -276,7 +221,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     setTenantError(
       `Password salah untuk Kamar ${activeTarget.roomNumber} (${
         activeTarget.kostLocation === 'acarya_2' ? 'Acarya Kost 2' : 'Acarya Kost 1'
-      }). Pastikan password sesuai data Google Sheet terbaru (huruf besar/kecil diperhatikan).`
+      }). Pastikan huruf besar/kecil password sesuai, atau jika admin baru mengubah password dari laptop, sinkronkan kode Apps Script Google Sheet terlebih dahulu.`
     );
   };
 
@@ -517,58 +462,12 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                 <button
                   id="btn-login-tenant"
                   type="submit"
-                  disabled={isVerifyingSheets}
-                  className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-indigo-600 via-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 disabled:opacity-70 text-white text-xs sm:text-sm font-extrabold shadow-lg shadow-indigo-600/30 transition-all flex items-center justify-center gap-2 cursor-pointer mt-2 active:scale-98"
+                  className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-indigo-600 via-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white text-xs sm:text-sm font-extrabold shadow-lg shadow-indigo-600/30 transition-all flex items-center justify-center gap-2 cursor-pointer mt-2 active:scale-98"
                 >
-                  {isVerifyingSheets ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      <span>Menyinkronkan Password Google Sheet...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Lock className="w-4 h-4" />
-                      <span>Masuk ke Dasbor Kamar</span>
-                      <ArrowRight className="w-4 h-4" />
-                    </>
-                  )}
+                  <Lock className="w-4 h-4" />
+                  <span>Masuk ke Dasbor Kamar</span>
+                  <ArrowRight className="w-4 h-4" />
                 </button>
-
-                {/* Live Google Sheet Sync Status Bar */}
-                {onSyncFromSheets && (
-                  <div className="flex items-center justify-between px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200/80 text-[11px] text-slate-600">
-                    <div className="flex items-center gap-1.5">
-                      <span
-                        className={`w-2 h-2 rounded-full ${
-                          isSyncingSheets || isVerifyingSheets
-                            ? 'bg-amber-500 animate-pulse'
-                            : hasSyncedSheetsOnce
-                              ? 'bg-emerald-500'
-                              : 'bg-slate-400'
-                        }`}
-                      />
-                      <span>
-                        {isSyncingSheets || isVerifyingSheets
-                          ? 'Menyinkronkan akun dari Google Sheet...'
-                          : hasSyncedSheetsOnce
-                            ? 'Password terhubung ke Google Sheet'
-                            : 'Menunggu sinkronisasi Google Sheet...'}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => syncAccountsNow()}
-                      disabled={isSyncingSheets || isVerifyingSheets}
-                      className="text-indigo-600 hover:text-indigo-800 font-bold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
-                      title="Muat ulang password terbaru dari Google Sheet"
-                    >
-                      <RefreshCw
-                        className={`w-3 h-3 ${isSyncingSheets || isVerifyingSheets ? 'animate-spin' : ''}`}
-                      />
-                      <span>Refresh</span>
-                    </button>
-                  </div>
-                )}
               </form>
             )}
 
@@ -692,7 +591,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
         {/* Info footer */}
         <p className="text-center text-[11px] text-slate-400">
-          © {new Date().getFullYear()} Acarya Kost • Sistem Pembayaran & Manajemen Kamar • v2.2 Sheet Sync Ready
+          © {new Date().getFullYear()} Acarya Kost • Sistem Pembayaran & Manajemen Kamar • v2.1 Mobile Ready
         </p>
       </div>
 
