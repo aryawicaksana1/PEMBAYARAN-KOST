@@ -109,14 +109,16 @@ function doPost(e) {
         rates: rates,
         timestamp: new Date().toISOString()
       })).setMimeType(ContentService.MimeType.JSON);
-    } else if (action === 'update_room_rates' || action === 'update_tenant') {
+    } else if (action === 'update_room_rates' || action === 'update_tenant' || action === 'sync_all_room_accounts') {
       var rateSheet = findOrCreateRateSheet(ss);
       var ratesPayload = data.rates || (data.tenant ? [data.tenant] : [data]);
       var updatedCount = saveRoomRatesToSheet(rateSheet, ratesPayload, ss);
       var currentRates = readAllRoomRates(rateSheet, ss);
       return ContentService.createTextOutput(JSON.stringify({
         status: 'success',
-        message: 'Berhasil memperbarui ' + updatedCount + ' data penghuni & tarif kamar di Google Sheet!',
+        action: action,
+        hasAccountsSync: true,
+        message: 'Berhasil memperbarui ' + updatedCount + ' data penghuni, akun login & tarif kamar di Google Sheet!',
         count: updatedCount,
         rates: currentRates,
         timestamp: new Date().toISOString()
@@ -189,8 +191,10 @@ function doGet(e) {
     return ContentService.createTextOutput(JSON.stringify({
       status: 'success',
       action: 'get_all_sync_data',
-      app: 'KostPay Multi-Room Google Sheets Engine V2.9',
-      message: 'Berhasil menyinkronkan Status Pembayaran Sewa & Listrik, Tarif Kamar, dan Jadwal dari Google Sheet!',
+      app: 'KostPay Multi-Room Google Sheets Engine V2.10',
+      hasAccountsSync: true,
+      hasPaymentsSync: true,
+      message: 'Berhasil menyinkronkan Akun Login Kamar, Status Pembayaran Sewa & Listrik, Tarif Kamar, dan Jadwal dari Google Sheet!',
       count: rates.length,
       rates: rates,
       kostPayments: kostPayments,
@@ -2018,6 +2022,8 @@ function readAllRoomRates(rateSheet, ss) {
   var colIdxRate = 3;
   var colIdxDue = 4;
   var colIdxNotes = 5;
+  var colIdxUser = -1;
+  var colIdxPass = -1;
 
   for (var c = 0; c < headerRow.length; c++) {
     var h = String(headerRow[c] || '').toLowerCase();
@@ -2027,6 +2033,8 @@ function readAllRoomRates(rateSheet, ss) {
     else if (h.indexOf('tarif') !== -1 || h.indexOf('sewa') !== -1) colIdxRate = c;
     else if (h.indexOf('tempo') !== -1 || h.indexOf('jatuh') !== -1) colIdxDue = c;
     else if (h.indexOf('catatan') !== -1) colIdxNotes = c;
+    else if (h.indexOf('user') !== -1) colIdxUser = c;
+    else if (h.indexOf('pass') !== -1 || h.indexOf('sandi') !== -1) colIdxPass = c;
   }
 
   var data = rateSheet.getRange(3, 1, lastRow - 2, lastCol).getValues();
@@ -2051,17 +2059,144 @@ function readAllRoomRates(rateSheet, ss) {
     var notes = String(row[colIdxNotes] || '');
 
     if (roomRaw) {
-      rates.push({
+      var rateObj = {
         kostLocation: loc,
         roomNumber: roomRaw,
         tenantName: name,
         monthlyRentRate: rate,
         rentDueDateDay: due,
         notes: notes
-      });
+      };
+      if (colIdxUser >= 0) {
+        var inlineUser = String(row[colIdxUser] || '').trim();
+        if (inlineUser) rateObj.username = inlineUser;
+      }
+      if (colIdxPass >= 0) {
+        var inlinePass = String(row[colIdxPass] || '').trim();
+        if (inlinePass) rateObj.password = inlinePass;
+      }
+      rates.push(rateObj);
     }
   }
+
+  // Gabungkan data Username & Password kamar dari tab AKUN_LOGIN_KAMAR (jika ada) agar sinkron antar perangkat (Laptop <-> HP)
+  try {
+    var accMap = readRoomAccountsMap(ss);
+    for (var k = 0; k < rates.length; k++) {
+      var key = rates[k].kostLocation + '_' + rates[k].roomNumber;
+      if (accMap[key]) {
+        if (accMap[key].username) rates[k].username = accMap[key].username;
+        if (accMap[key].password) rates[k].password = accMap[key].password;
+        if (accMap[key].phone !== undefined) rates[k].phone = accMap[key].phone;
+        if (accMap[key].isOccupied !== undefined) rates[k].isOccupied = accMap[key].isOccupied;
+      }
+    }
+  } catch (eAccRead) {}
+
   return rates;
+}
+
+function findOrCreateRoomAccountsSheet(ss) {
+  if (!ss) ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheetName = "AKUN_LOGIN_KAMAR";
+  var sheet = ss.getSheetByName(sheetName);
+  if (sheet) return sheet;
+
+  sheet = ss.insertSheet(sheetName);
+  var headers = [
+    "Cabang Kost", "Nomor Kamar", "Nama Penghuni", "Username", "Password", "No. WhatsApp", "Status Huni", "Terakhir Diubah"
+  ];
+  sheet.appendRow(headers);
+  sheet.getRange(1, 1, 1, headers.length).setBackground("#0F172A").setFontColor("#FFFFFF").setFontWeight("bold");
+  sheet.setFrozenRows(1);
+  return sheet;
+}
+
+function readRoomAccountsMap(ss) {
+  var map = {};
+  var sheet = ss.getSheetByName("AKUN_LOGIN_KAMAR");
+  if (!sheet || sheet.getLastRow() < 2) return map;
+  var lastCol = Math.max(sheet.getLastColumn(), 7);
+  var header = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  var cBranch = 0, cRoom = 1, cUser = 3, cPass = 4, cPhone = 5, cStatus = 6;
+  for (var hc = 0; hc < header.length; hc++) {
+    var hText = String(header[hc] || '').toLowerCase();
+    if (hText.indexOf('cabang') !== -1) cBranch = hc;
+    else if (hText.indexOf('nomor') !== -1 || hText.indexOf('kamar') !== -1) cRoom = hc;
+    else if (hText.indexOf('user') !== -1) cUser = hc;
+    else if (hText.indexOf('pass') !== -1 || hText.indexOf('sandi') !== -1) cPass = hc;
+    else if (hText.indexOf('wa') !== -1 || hText.indexOf('hp') !== -1 || hText.indexOf('telepon') !== -1) cPhone = hc;
+    else if (hText.indexOf('status') !== -1) cStatus = hc;
+  }
+
+  var data = sheet.getRange(2, 1, sheet.getLastRow() - 1, lastCol).getValues();
+  for (var i = 0; i < data.length; i++) {
+    var row = data[i];
+    var branchRaw = String(row[cBranch] || '').toLowerCase();
+    var loc = (branchRaw.indexOf('2') !== -1 || branchRaw.indexOf('dua') !== -1) ? 'acarya_2' : 'acarya_1';
+    var room = extractRoomDigits(row[cRoom]);
+    var username = String(row[cUser] || '').trim();
+    var password = String(row[cPass] || '').trim();
+    var phone = String(row[cPhone] || '').trim();
+    var stRaw = String(row[cStatus] || '').toUpperCase().trim();
+    if (room) {
+      map[loc + '_' + room] = {
+        username: username || undefined,
+        password: password || undefined,
+        phone: phone || undefined,
+        isOccupied: stRaw ? (stRaw === 'DIHUNI') : undefined
+      };
+    }
+  }
+  return map;
+}
+
+function upsertRoomAccountsToSheet(ss, items) {
+  if (!ss || !items || !items.length) return;
+  var hasAccountData = false;
+  for (var x = 0; x < items.length; x++) {
+    if (items[x].username || items[x].password) {
+      hasAccountData = true;
+      break;
+    }
+  }
+  if (!hasAccountData) return;
+
+  var sheet = findOrCreateRoomAccountsSheet(ss);
+  var lastRow = sheet.getLastRow();
+  var existingVals = lastRow >= 2 ? sheet.getRange(2, 1, lastRow - 1, 8).getValues() : [];
+
+  for (var j = 0; j < items.length; j++) {
+    var item = items[j];
+    if (!item || !item.roomNumber) continue;
+    var loc = (String(item.kostLocation || '').indexOf('2') !== -1) ? 'acarya_2' : 'acarya_1';
+    var branchLabel = loc === 'acarya_2' ? 'Acarya 2' : 'Acarya 1';
+    var room = extractRoomDigits(item.roomNumber);
+    var nameStr = String(item.tenantName || item.name || ('Kamar ' + room)).trim();
+    var userStr = String(item.username || ('kamar' + room)).trim();
+    var passStr = String(item.password || '').trim();
+    var phoneStr = String(item.phone || '').trim();
+    var stStr = item.isOccupied === false ? 'TERSEDIA' : 'DIHUNI';
+    if (!passStr && !item.username) continue;
+
+    var foundIdx = -1;
+    for (var i = 0; i < existingVals.length; i++) {
+      var eLoc = (String(existingVals[i][0] || '').toLowerCase().indexOf('2') !== -1) ? 'acarya_2' : 'acarya_1';
+      var eRoom = extractRoomDigits(existingVals[i][1]);
+      if (eLoc === loc && eRoom === room) {
+        foundIdx = i + 2;
+        break;
+      }
+    }
+
+    var rowVals = [branchLabel, room, nameStr, userStr, passStr, phoneStr, stStr, new Date().toLocaleString('id-ID')];
+    if (foundIdx > 0) {
+      sheet.getRange(foundIdx, 1, 1, rowVals.length).setValues([rowVals]);
+    } else {
+      sheet.appendRow(rowVals);
+      existingVals.push(rowVals);
+    }
+  }
 }
 
 function renameAndSyncRoomTenantInSheets(ss, item) {
@@ -2146,6 +2281,9 @@ function saveRoomRatesToSheet(rateSheet, newRates, ss) {
   }
 
   range.setValues(values);
+  try {
+    upsertRoomAccountsToSheet(ss, newRates);
+  } catch (eUpAcc) {}
   return updated;
 }
 
@@ -2245,6 +2383,7 @@ function readKostPaymentsFromSheet(ss) {
     'Jadwal_Cek_Kamar': true,
     'Arsip_Foto_Bukti': true,
     'KONTROL_CICILAN_TAHUNAN': true,
+    'AKUN_LOGIN_KAMAR': true,
     'Log_Sistem': true
   };
 
@@ -2388,6 +2527,7 @@ function readElectricityPaymentsFromSheet(ss) {
     'Jadwal_Cek_Kamar': true,
     'Arsip_Foto_Bukti': true,
     'KONTROL_CICILAN_TAHUNAN': true,
+    'AKUN_LOGIN_KAMAR': true,
     'Log_Sistem': true
   };
 
@@ -2471,7 +2611,7 @@ async function postJsonToAppsScript(
   targetUrl: string,
   payloadObj: Record<string, any>,
   timeoutMs = 45000
-): Promise<{ success: boolean; message: string }> {
+): Promise<{ success: boolean; message: string; data?: any }> {
   const bodyStr = JSON.stringify(payloadObj);
   const controller = new AbortController();
   const timeoutId = setTimeout(() => {
@@ -2497,11 +2637,13 @@ async function postJsonToAppsScript(
         return {
           success: false,
           message: `Google Apps Script melaporkan kendala: ${json.message}`,
+          data: json,
         };
       }
       return {
         success: true,
         message: json?.message || 'Data & Bukti Foto berhasil dicatat ke Google Spreadsheet & Google Drive Anda!',
+        data: json,
       };
     } catch {
       return {
@@ -2546,7 +2688,7 @@ async function postJsonToAppsScript(
 export async function sendToGoogleSheets(
   webAppUrl: string,
   payload: Record<string, any>
-): Promise<{ success: boolean; message: string }> {
+): Promise<{ success: boolean; message: string; data?: any }> {
   const cleanUrl = resolveActiveWebAppUrl(webAppUrl);
 
   // Normalisasi payload agar pembayaran sewa & listrik (baik baru dikirim maupun sudah diverifikasi)
@@ -2630,6 +2772,7 @@ export async function fetchRoomRatesFromGoogleSheets(
   kostPayments?: KostPaymentRecord[];
   electricityPayments?: ElectricityRecord[];
   hasPaymentsSync?: boolean;
+  hasAccountsSync?: boolean;
   acServices?: AcServiceRecord[];
   facilities?: FacilityMaintenance[];
   roomInspections?: RoomInspection[];
@@ -2666,6 +2809,7 @@ export async function fetchRoomRatesFromGoogleSheets(
       Array.isArray(data.roomInspections);
     const hasPaymentsSync =
       Array.isArray(data.kostPayments) || Array.isArray(data.electricityPayments);
+    const hasAccountsSync = Boolean(data.hasAccountsSync);
 
     if (data.status === 'success') {
       return {
@@ -2676,6 +2820,7 @@ export async function fetchRoomRatesFromGoogleSheets(
           ? data.electricityPayments
           : undefined,
         hasPaymentsSync,
+        hasAccountsSync,
         acServices: Array.isArray(data.acServices) ? data.acServices : undefined,
         facilities: Array.isArray(data.facilities) ? data.facilities : undefined,
         roomInspections: Array.isArray(data.roomInspections) ? data.roomInspections : undefined,

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import {
   ShieldCheck,
   ArrowLeft,
@@ -25,6 +25,7 @@ import {
   Share2,
   BellRing,
   Layers,
+  RefreshCw,
 } from 'lucide-react';
 import {
   TenantProfile,
@@ -40,6 +41,14 @@ import {
   generateElectricityReminderMessage,
   generateInstallmentReminderMessage,
 } from '../utils/whatsappHelper';
+import { sanitizeAuthInput } from '../utils/authHelper';
+
+export interface TenantUpdateResult {
+  localSaved: boolean;
+  syncedToSheets: boolean;
+  hasAccountsSync: boolean;
+  message: string;
+}
 
 interface AdminDashboardModalProps {
   tenants: TenantProfile[];
@@ -54,7 +63,15 @@ interface AdminDashboardModalProps {
   ) => Promise<{ success: boolean; message: string; sentToSheets: boolean }> | void;
   onOpenGoogleSheetsModal: () => void;
   onOpenWhatsAppModal?: () => void;
-  onUpdateTenant?: (updated: TenantProfile) => void;
+  onUpdateTenant?: (updated: TenantProfile) => Promise<TenantUpdateResult> | void;
+  isGoogleSheetAccountSyncReady?: boolean | null;
+  onSyncAllAccountsToSheets?: () => Promise<{
+    success: boolean;
+    hasAccountsSync: boolean;
+    message: string;
+  }>;
+  onSyncFromSheets?: () => Promise<{ success: boolean; message: string }>;
+  isSyncingSheets?: boolean;
   onOpenReceipt?: (record: KostPaymentRecord | ElectricityRecord, type: 'kost' | 'electricity') => void;
 }
 
@@ -69,6 +86,10 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
   onOpenGoogleSheetsModal,
   onOpenWhatsAppModal,
   onUpdateTenant,
+  isGoogleSheetAccountSyncReady,
+  onSyncAllAccountsToSheets,
+  onSyncFromSheets,
+  isSyncingSheets = false,
   onOpenReceipt,
 }) => {
   const [activeTab, setActiveTab] = useState<'verifikasi' | 'penghuni' | 'akun' | 'rekap'>(initialTab);
@@ -82,6 +103,10 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
   const [editingTenant, setEditingTenant] = useState<TenantProfile | null>(null);
   const [editUsernameInput, setEditUsernameInput] = useState('');
   const [editPasswordInput, setEditPasswordInput] = useState('');
+  const [isSavingPassword, setIsSavingPassword] = useState(false);
+  const [isSyncingAllAccounts, setIsSyncingAllAccounts] = useState(false);
+  const editUsernameRef = useRef<HTMLInputElement>(null);
+  const editPasswordRef = useRef<HTMLInputElement>(null);
 
   React.useEffect(() => {
     if (initialTab) {
@@ -305,29 +330,91 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
     return `k${roomNumber}${randomPart}`;
   };
 
-  const handleSavePassword = (e?: React.FormEvent) => {
+  const handleSavePassword = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!editingTenant || !editPasswordInput.trim()) return;
-    const newPass = editPasswordInput.trim();
-    const newUser = editUsernameInput.trim() || `kamar${editingTenant.roomNumber}`;
+    if (!editingTenant || isSavingPassword) return;
+
+    const rawPass = editPasswordRef.current?.value ?? editPasswordInput;
+    const rawUser = editUsernameRef.current?.value ?? editUsernameInput;
+    const newPass = sanitizeAuthInput(rawPass);
+    const newUser = sanitizeAuthInput(rawUser) || `kamar${editingTenant.roomNumber}`;
+    if (!newPass) return;
+
+    setIsSavingPassword(true);
     const updated: TenantProfile = {
       ...editingTenant,
       username: newUser,
       password: newPass,
     };
-    if (onUpdateTenant) {
-      onUpdateTenant(updated);
+
+    try {
+      const res = onUpdateTenant ? await onUpdateTenant(updated) : undefined;
+      const branchLabel =
+        editingTenant.kostLocation === 'acarya_2' ? 'Acarya Kost 2' : 'Acarya Kost 1';
+
+      if (res && typeof res === 'object') {
+        if (res.syncedToSheets && res.hasAccountsSync) {
+          setToastData({
+            type: 'success',
+            title: 'Password Tersimpan Permanen di Aplikasi & Google Sheet!',
+            message: `${branchLabel} - Kamar ${editingTenant.roomNumber} (${editingTenant.name}) kini menggunakan Username: "${newUser}" & Password Baru: "${newPass}". Sudah tersinkron ke Google Sheet untuk login dari HP Android maupun Laptop.`,
+          });
+        } else {
+          setToastData({
+            type: 'warning',
+            title: 'Password Tersimpan di Perangkat Ini (Perlu Update Apps Script)',
+            message: `${branchLabel} - Kamar ${editingTenant.roomNumber} menggunakan Password Baru "${newPass}" di perangkat ini, namun kode Google Apps Script (Kode.gs) Anda masih versi lama sehingga belum tersimpan ke tab AKUN_LOGIN_KAMAR Google Sheet. Buka menu "Google Sheet" lalu salin kode terbaru & Deploy Versi Baru agar tersimpan untuk semua HP.`,
+          });
+        }
+      } else {
+        setToastData({
+          type: 'success',
+          title: 'Akun & Password Login Berhasil Diperbarui!',
+          message: `${branchLabel} - Kamar ${editingTenant.roomNumber} (${editingTenant.name}) kini menggunakan Username: "${newUser}" dan Password Baru: "${newPass}".`,
+        });
+      }
+
+      setEditingTenant(null);
+      setEditPasswordInput('');
+      setEditUsernameInput('');
+    } finally {
+      setIsSavingPassword(false);
     }
-    const branchLabel =
-      editingTenant.kostLocation === 'acarya_2' ? 'Acarya Kost 2' : 'Acarya Kost 1';
+  };
+
+  const handleSyncAllPasswordsNow = async () => {
+    if (!onSyncAllAccountsToSheets || isSyncingAllAccounts) return;
+    setIsSyncingAllAccounts(true);
+    try {
+      const res = await onSyncAllAccountsToSheets();
+      if (res.success && res.hasAccountsSync) {
+        setToastData({
+          type: 'success',
+          title: 'Semua Username & Password Tersimpan di Google Sheet!',
+          message: '29 akun & password kamar telah disinkronkan permanen ke tab AKUN_LOGIN_KAMAR di Google Sheet dan siap digunakan dari HP Android mana pun.',
+        });
+      } else {
+        setToastData({
+          type: 'warning',
+          title: 'Perlu Update Kode Google Apps Script (Kode.gs)',
+          message: 'Google Apps Script Anda belum mendukung tab AKUN_LOGIN_KAMAR. Silakan klik menu "Google Sheet", salin kode terbaru ke Kode.gs, lalu Deploy Versi Baru.',
+        });
+      }
+    } finally {
+      setIsSyncingAllAccounts(false);
+    }
+  };
+
+  const handlePullPasswordsFromSheets = async () => {
+    if (!onSyncFromSheets || isSyncingSheets) return;
+    const res = await onSyncFromSheets();
     setToastData({
-      type: 'success',
-      title: 'Akun & Password Login Berhasil Diperbarui!',
-      message: `${branchLabel} - Kamar ${editingTenant.roomNumber} (${editingTenant.name}) kini menggunakan Username: "${newUser}" dan Password Baru: "${newPass}".`,
+      type: res.success ? 'success' : 'warning',
+      title: res.success
+        ? 'Password & Data Kamar Diperbarui dari Google Sheet!'
+        : 'Gagal Menarik Data dari Google Sheet',
+      message: res.message,
     });
-    setEditingTenant(null);
-    setEditPasswordInput('');
-    setEditUsernameInput('');
   };
 
   const openEditProfileModal = (t: TenantProfile) => {
@@ -1480,6 +1567,30 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
               </div>
 
               <div className="flex items-center gap-2 flex-wrap">
+                {onSyncFromSheets && (
+                  <button
+                    type="button"
+                    onClick={handlePullPasswordsFromSheets}
+                    disabled={isSyncingSheets}
+                    className="px-3.5 py-2 rounded-lg bg-white hover:bg-slate-100 disabled:opacity-60 text-indigo-700 border border-indigo-200 text-xs font-bold flex items-center gap-1.5 transition-colors shadow-2xs cursor-pointer"
+                    title="Muat ulang akun & password terbaru langsung dari tab AKUN_LOGIN_KAMAR di Google Sheet"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${isSyncingSheets ? 'animate-spin' : ''}`} />
+                    <span>{isSyncingSheets ? 'Memuat...' : 'Tarik dari Google Sheet'}</span>
+                  </button>
+                )}
+                {onSyncAllAccountsToSheets && (
+                  <button
+                    type="button"
+                    onClick={handleSyncAllPasswordsNow}
+                    disabled={isSyncingAllAccounts}
+                    className="px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 transition-colors shadow-2xs cursor-pointer"
+                    title="Simpan seluruh username & password ke Google Sheet agar terbaca di HP Android"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${isSyncingAllAccounts ? 'animate-spin' : ''}`} />
+                    <span>{isSyncingAllAccounts ? 'Menyimpan...' : 'Simpan Semua ke Google Sheet'}</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={handleCopyAllCredentials}
@@ -1500,6 +1611,27 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
                 </button>
               </div>
             </div>
+
+            {isGoogleSheetAccountSyncReady === false && (
+              <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-950 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-start gap-2.5">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <strong className="block">Kode Google Apps Script Belum Mendukung Simpan Password Permanen</strong>
+                    <p className="mt-0.5 text-amber-900/90 leading-relaxed">
+                      Agar password yang Anda ubah tersimpan permanen di Google Sheet (dan tidak kembali ke password default saat login dari HP Android lain), salin kode terbaru dari menu <strong>Google Sheet</strong> lalu <strong>Deploy Versi Baru</strong> di Apps Script.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={onOpenGoogleSheetsModal}
+                  className="px-3 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs shrink-0 cursor-pointer"
+                >
+                  Update Kode Google Sheet
+                </button>
+              </div>
+            )}
 
             {/* Quick Tips */}
             <div className="p-3 bg-indigo-50/70 border border-indigo-100 rounded-xl text-xs text-indigo-950 flex items-start gap-2.5">
@@ -2076,12 +2208,17 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
                   Username Login Kamar:
                 </label>
                 <input
+                  ref={editUsernameRef}
                   id="input-edit-tenant-username"
+                  name="roomUsername"
                   type="text"
                   value={editUsernameInput}
                   onChange={(e) => setEditUsernameInput(e.target.value)}
                   placeholder={`kamar${editingTenant.roomNumber}`}
-                  className="w-full text-xs font-mono font-bold px-3 py-2.5 rounded-lg border border-slate-300 bg-slate-50 focus:bg-white focus:outline-hidden focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  className="w-full text-base sm:text-xs font-mono font-bold px-3 py-2.5 rounded-lg border border-slate-300 bg-slate-50 focus:bg-white focus:outline-hidden focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600"
                 />
               </div>
 
@@ -2090,12 +2227,17 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
                   Password Login Baru:
                 </label>
                 <input
+                  ref={editPasswordRef}
                   id="input-edit-tenant-password"
+                  name="roomPassword"
                   type="text"
                   value={editPasswordInput}
                   onChange={(e) => setEditPasswordInput(e.target.value)}
                   placeholder="Masukkan password baru..."
-                  className="w-full text-sm font-mono font-extrabold text-indigo-900 px-3 py-2.5 rounded-lg border-2 border-indigo-300 bg-white focus:outline-hidden focus:border-indigo-600 focus:ring-2 focus:ring-indigo-500/20"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  className="w-full text-base sm:text-sm font-mono font-extrabold text-indigo-900 px-3 py-2.5 rounded-lg border-2 border-indigo-300 bg-white focus:outline-hidden focus:border-indigo-600 focus:ring-2 focus:ring-indigo-500/20"
                   autoFocus
                 />
                 <div className="flex items-center gap-1.5 flex-wrap pt-2">
@@ -2130,7 +2272,7 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
                   </button>
                 </div>
                 <p className="text-[10px] text-slate-400 mt-1.5">
-                  Password ini langsung aktif dan digunakan penghuni untuk login ke dasbor Kamar {editingTenant.roomNumber}.
+                  Password ini langsung aktif dan dikirim ke Google Sheet (`AKUN_LOGIN_KAMAR`) agar bisa dipakai dari HP maupun Laptop.
                 </p>
               </div>
             </div>
@@ -2139,17 +2281,19 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
               <button
                 type="button"
                 onClick={() => setEditingTenant(null)}
-                className="flex-1 py-2.5 px-3 rounded-lg border border-slate-200 text-slate-700 text-xs font-bold hover:bg-slate-100 cursor-pointer"
+                disabled={isSavingPassword}
+                className="flex-1 py-2.5 px-3 rounded-lg border border-slate-200 text-slate-700 text-xs font-bold hover:bg-slate-100 cursor-pointer disabled:opacity-50"
               >
                 Batal
               </button>
               <button
                 id="btn-save-tenant-password"
                 type="submit"
-                className="flex-1 py-2.5 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-2xs transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+                disabled={isSavingPassword}
+                className="flex-1 py-2.5 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs font-bold shadow-2xs transition-colors cursor-pointer flex items-center justify-center gap-1.5"
               >
                 <Check className="w-4 h-4" />
-                <span>Simpan Password</span>
+                <span>{isSavingPassword ? 'Menyimpan...' : 'Simpan Password'}</span>
               </button>
             </div>
           </form>

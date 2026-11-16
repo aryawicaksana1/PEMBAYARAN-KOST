@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Building2,
@@ -19,20 +19,38 @@ import {
   Sparkles,
   ArrowRight,
   Info,
+  RefreshCw,
 } from 'lucide-react';
 import { TenantProfile, KostLocation, AuthSession } from '../types';
 import { formatRupiah } from '../utils/whatsappHelper';
+import {
+  sanitizeAuthInput,
+  isValidAdminCredentials,
+  isValidAdminPasswordOnly,
+  isTenantPasswordMatch,
+  findMatchingTenantInBranch,
+} from '../utils/authHelper';
 
 interface LoginPageProps {
   tenants: TenantProfile[];
   onLoginSuccess: (session: AuthSession, tenant?: TenantProfile) => void;
   selectedLocation: KostLocation | 'all';
+  onSyncFromSheets?: () => Promise<{
+    tenants: TenantProfile[] | null;
+    success: boolean;
+    message?: string;
+  }>;
+  isSyncingSheets?: boolean;
+  hasSyncedSheetsOnce?: boolean;
 }
 
 export const LoginPage: React.FC<LoginPageProps> = ({
   tenants,
   onLoginSuccess,
   selectedLocation: initialLocation,
+  onSyncFromSheets,
+  isSyncingSheets = false,
+  hasSyncedSheetsOnce = false,
 }) => {
   const [authTab, setAuthTab] = useState<'tenant' | 'admin'>('tenant');
 
@@ -51,9 +69,36 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   const [showAdminPassword, setShowAdminPassword] = useState(false);
   const [adminError, setAdminError] = useState<string | null>(null);
 
-  // Success state
+  const tenantUserRef = useRef<HTMLInputElement>(null);
+  const tenantPassRef = useRef<HTMLInputElement>(null);
+  const adminUserRef = useRef<HTMLInputElement>(null);
+  const adminPassRef = useRef<HTMLInputElement>(null);
+
+  // Success & live Google Sheet sync state
   const [isSuccess, setIsSuccess] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
+  const [isVerifyingSheets, setIsVerifyingSheets] = useState(false);
+  const lastSyncAtRef = useRef<number>(hasSyncedSheetsOnce ? Date.now() : 0);
+
+  useEffect(() => {
+    if (hasSyncedSheetsOnce) {
+      lastSyncAtRef.current = Date.now();
+    }
+  }, [hasSyncedSheetsOnce]);
+
+  const syncAccountsNow = async (): Promise<TenantProfile[]> => {
+    if (!onSyncFromSheets) return tenants;
+    try {
+      const res = await onSyncFromSheets();
+      if (res.success && res.tenants && res.tenants.length > 0) {
+        lastSyncAtRef.current = Date.now();
+        return res.tenants;
+      }
+    } catch {
+      // ignore network error and fallback to local cached tenants
+    }
+    return tenants;
+  };
 
   // Help modal for owner to see accounts list (Protected by Admin Password)
   const [isAccountListOpen, setIsAccountListOpen] = useState(false);
@@ -85,7 +130,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   };
 
   const handleOpenAccountListRequest = () => {
-    if (adminPassword.trim() === 'bosacarya1') {
+    if (isValidAdminPasswordOnly(adminPassword)) {
+      syncAccountsNow();
       setIsAccountListOpen(true);
     } else {
       setAdminVerifyPassword('');
@@ -96,7 +142,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
   const handleVerifyAdminForAccountList = (e: React.FormEvent) => {
     e.preventDefault();
-    if (adminVerifyPassword.trim() === 'bosacarya1') {
+    if (isValidAdminPasswordOnly(adminVerifyPassword)) {
+      syncAccountsNow();
       setIsAdminVerifyModalOpen(false);
       setAdminVerifyPassword('');
       setAdminVerifyError(null);
@@ -106,99 +153,159 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     }
   };
 
-  // Handler for tenant login
-  const handleTenantSubmit = (e: React.FormEvent) => {
+  const completeLoginTransition = (
+    message: string,
+    session: AuthSession,
+    tenant?: TenantProfile
+  ) => {
+    try {
+      (document.activeElement as HTMLElement | null)?.blur?.();
+    } catch {
+      // ignore focus blur errors
+    }
+    setIsSuccess(true);
+    setSuccessMessage(message);
+
+    setTimeout(() => {
+      onLoginSuccess(session, tenant);
+    }, 450);
+  };
+
+  // Handler for tenant login (always checks latest Google Sheet accounts so updated passwords work across all devices)
+  const handleTenantSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSuccess || isVerifyingSheets) return;
     setTenantError(null);
 
-    const inputUser = tenantIdentifier.trim().toLowerCase();
-    const inputPass = tenantPassword.trim();
+    const rawUserVal = tenantUserRef.current?.value ?? tenantIdentifier;
+    const rawPassVal = tenantPassRef.current?.value ?? tenantPassword;
+    const inputUser = sanitizeAuthInput(rawUserVal).toLowerCase();
+    const inputPass = sanitizeAuthInput(rawPassVal);
 
     if (!inputUser || !inputPass) {
       setTenantError('Silakan masukkan Nomor Kamar / Username dan Password.');
       return;
     }
 
-    // Extract digits or clean string
-    // e.g. "kamar 02", "kamar02", "02", "2"
-    const cleanedDigits = inputUser.replace(/\D/g, '');
-    const paddedRoom = cleanedDigits ? cleanedDigits.padStart(2, '0') : '';
-
-    // Search for matching tenant in the selected branch
-    const matchedTenant = tenants.find((t) => {
-      if (t.kostLocation !== selectedBranch) return false;
-
-      const roomMatch =
-        t.roomNumber.toLowerCase() === inputUser ||
-        (paddedRoom && t.roomNumber === paddedRoom) ||
-        (t.username && t.username.toLowerCase() === inputUser);
-
-      return roomMatch;
-    });
-
-    if (!matchedTenant) {
+    // Jika pengelola tanpa sengaja memasukkan akun admin di tab Penghuni Kamar
+    if (inputUser === 'bosacarya') {
+      if (isValidAdminPasswordOnly(inputPass)) {
+        completeLoginTransition('Login Pengelola Kost Berhasil!', {
+          role: 'admin',
+          username: 'bosacarya',
+          name: 'BOS ACARYA (Pengelola)',
+        });
+        return;
+      }
       setTenantError(
-        `Kamar/Username "${tenantIdentifier}" tidak ditemukan di ${
+        'Akun "bosacarya" adalah akun Pengelola. Silakan ketuk tab "Pengelola (Admin)" di bagian atas.'
+      );
+      return;
+    }
+
+    const otherBranch: KostLocation = selectedBranch === 'acarya_2' ? 'acarya_1' : 'acarya_2';
+    const cachedBranchMatch = findMatchingTenantInBranch(tenants, inputUser, selectedBranch);
+    const cachedOtherMatch = findMatchingTenantInBranch(tenants, inputUser, otherBranch);
+    const cachedCandidate = cachedBranchMatch || cachedOtherMatch;
+    const cachedPasswordOk = Boolean(
+      cachedCandidate && isTenantPasswordMatch(inputPass, cachedCandidate.password)
+    );
+    const isStaleSync = Date.now() - lastSyncAtRef.current > 10000;
+
+    // Sinkronkan terlebih dahulu dengan Google Sheet jika belum sinkron awal, sudah lewat 10 detik,
+    // atau jika password tidak cocok dengan cache lokal (agar password baru di Google Sheet langsung terbaca).
+    let activeTenants = tenants;
+    if (onSyncFromSheets && (!hasSyncedSheetsOnce || isSyncingSheets || isStaleSync || !cachedPasswordOk)) {
+      setIsVerifyingSheets(true);
+      try {
+        activeTenants = await syncAccountsNow();
+      } finally {
+        setIsVerifyingSheets(false);
+      }
+    }
+
+    // Prioritaskan pencarian di cabang yang sedang dipilih menggunakan data terbaru dari Google Sheet
+    const matchedInBranch = findMatchingTenantInBranch(activeTenants, inputUser, selectedBranch);
+    if (matchedInBranch && isTenantPasswordMatch(inputPass, matchedInBranch.password)) {
+      completeLoginTransition(
+        `Selamat datang, ${matchedInBranch.name} (Kamar ${matchedInBranch.roomNumber})!`,
+        {
+          role: 'tenant',
+          tenantId: matchedInBranch.id,
+          username: matchedInBranch.username || `kamar${matchedInBranch.roomNumber}`,
+          name: matchedInBranch.name,
+          roomNumber: matchedInBranch.roomNumber,
+          kostLocation: matchedInBranch.kostLocation,
+        },
+        matchedInBranch
+      );
+      return;
+    }
+
+    // Fallback pintar untuk pengguna HP yang lupa memindahkan tombol cabang (Acarya 1 vs Acarya 2)
+    const matchedInOtherBranch = findMatchingTenantInBranch(activeTenants, inputUser, otherBranch);
+    if (matchedInOtherBranch && isTenantPasswordMatch(inputPass, matchedInOtherBranch.password)) {
+      setSelectedBranch(otherBranch);
+      completeLoginTransition(
+        `Selamat datang, ${matchedInOtherBranch.name} (${
+          otherBranch === 'acarya_2' ? 'Acarya Kost 2' : 'Acarya Kost 1'
+        } • Kamar ${matchedInOtherBranch.roomNumber})!`,
+        {
+          role: 'tenant',
+          tenantId: matchedInOtherBranch.id,
+          username: matchedInOtherBranch.username || `kamar${matchedInOtherBranch.roomNumber}`,
+          name: matchedInOtherBranch.name,
+          roomNumber: matchedInOtherBranch.roomNumber,
+          kostLocation: matchedInOtherBranch.kostLocation,
+        },
+        matchedInOtherBranch
+      );
+      return;
+    }
+
+    const activeTarget = matchedInBranch || matchedInOtherBranch;
+    if (!activeTarget) {
+      setTenantError(
+        `Kamar/Username "${sanitizeAuthInput(rawUserVal)}" tidak ditemukan di ${
           selectedBranch === 'acarya_2' ? 'Acarya Kost 2' : 'Acarya Kost 1'
         }. Periksa kembali nomor kamar Anda.`
       );
       return;
     }
 
-    // Verify password
-    const validPassword = matchedTenant.password;
-
-    if (inputPass !== validPassword) {
-      setTenantError(
-        `Password salah untuk Kamar ${matchedTenant.roomNumber}. Silakan periksa kembali atau tanyakan ke pengelola kost.`
-      );
-      return;
-    }
-
-    // Success!
-    setIsSuccess(true);
-    setSuccessMessage(`Selamat datang, ${matchedTenant.name} (Kamar ${matchedTenant.roomNumber})!`);
-
-    setTimeout(() => {
-      onLoginSuccess(
-        {
-          role: 'tenant',
-          tenantId: matchedTenant.id,
-          username: matchedTenant.username || `kamar${matchedTenant.roomNumber}`,
-          name: matchedTenant.name,
-          roomNumber: matchedTenant.roomNumber,
-          kostLocation: matchedTenant.kostLocation,
-        },
-        matchedTenant
-      );
-    }, 600);
+    setTenantError(
+      `Password salah untuk Kamar ${activeTarget.roomNumber} (${
+        activeTarget.kostLocation === 'acarya_2' ? 'Acarya Kost 2' : 'Acarya Kost 1'
+      }). Pastikan password sesuai data Google Sheet terbaru (huruf besar/kecil diperhatikan).`
+    );
   };
 
   // Handler for admin login
   const handleAdminSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSuccess) return;
     setAdminError(null);
 
-    const u = adminUsername.trim();
-    const p = adminPassword.trim();
+    const rawAdminU = adminUserRef.current?.value ?? adminUsername;
+    const rawAdminP = adminPassRef.current?.value ?? adminPassword;
+    const u = sanitizeAuthInput(rawAdminU);
+    const p = sanitizeAuthInput(rawAdminP);
 
     if (!u || !p) {
       setAdminError('Silakan masukkan username dan password admin.');
       return;
     }
 
-    if (u === 'bosacarya' && p === 'bosacarya1') {
-      setIsSuccess(true);
-      setSuccessMessage('Login Pengelola Kost Berhasil!');
-      setTimeout(() => {
-        onLoginSuccess({
-          role: 'admin',
-          username: 'bosacarya',
-          name: 'BOS ACARYA (Pengelola)',
-        });
-      }, 600);
+    if (isValidAdminCredentials(u, p)) {
+      completeLoginTransition('Login Pengelola Kost Berhasil!', {
+        role: 'admin',
+        username: 'bosacarya',
+        name: 'BOS ACARYA (Pengelola)',
+      });
     } else {
-      setAdminError('Username atau password admin salah. Kredensial tidak valid.');
+      setAdminError(
+        'Username atau password admin salah. Pastikan huruf kecil/besar benar dan tidak ada spasi tambahan.'
+      );
     }
   };
 
@@ -350,13 +457,19 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                   <div className="relative">
                     <User className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
                     <input
+                      ref={tenantUserRef}
                       id="input-tenant-user"
+                      name="username"
                       type="text"
                       value={tenantIdentifier}
                       onChange={(e) => setTenantIdentifier(e.target.value)}
                       placeholder="Masukkan username anda"
-                      className="w-full text-xs font-medium pl-9 pr-3 py-2.5 rounded-lg border border-slate-200 bg-white focus:outline-hidden focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600 transition-all text-slate-900"
+                      className="w-full text-base sm:text-sm font-medium pl-9 pr-3 py-2.5 rounded-lg border border-slate-200 bg-white focus:outline-hidden focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600 transition-all text-slate-900"
                       autoComplete="username"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      enterKeyHint="next"
                     />
                   </div>
                   <p className="text-[10px] text-slate-400">
@@ -372,13 +485,19 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                   <div className="relative">
                     <KeyRound className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
                     <input
+                      ref={tenantPassRef}
                       id="input-tenant-password"
+                      name="password"
                       type={showTenantPassword ? 'text' : 'password'}
                       value={tenantPassword}
                       onChange={(e) => setTenantPassword(e.target.value)}
                       placeholder="Masukkan password anda"
-                      className="w-full text-xs font-medium pl-9 pr-10 py-2.5 rounded-lg border border-slate-200 bg-white focus:outline-hidden focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600 transition-all text-slate-900"
+                      className="w-full text-base sm:text-sm font-medium pl-9 pr-10 py-2.5 rounded-lg border border-slate-200 bg-white focus:outline-hidden focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600 transition-all text-slate-900"
                       autoComplete="current-password"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      enterKeyHint="go"
                     />
                     <button
                       type="button"
@@ -398,12 +517,58 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                 <button
                   id="btn-login-tenant"
                   type="submit"
-                  className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-indigo-600 via-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white text-xs sm:text-sm font-extrabold shadow-lg shadow-indigo-600/30 transition-all flex items-center justify-center gap-2 cursor-pointer mt-2 active:scale-98"
+                  disabled={isVerifyingSheets}
+                  className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-indigo-600 via-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 disabled:opacity-70 text-white text-xs sm:text-sm font-extrabold shadow-lg shadow-indigo-600/30 transition-all flex items-center justify-center gap-2 cursor-pointer mt-2 active:scale-98"
                 >
-                  <Lock className="w-4 h-4" />
-                  <span>Masuk ke Dasbor Kamar</span>
-                  <ArrowRight className="w-4 h-4" />
+                  {isVerifyingSheets ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>Menyinkronkan Password Google Sheet...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Lock className="w-4 h-4" />
+                      <span>Masuk ke Dasbor Kamar</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </>
+                  )}
                 </button>
+
+                {/* Live Google Sheet Sync Status Bar */}
+                {onSyncFromSheets && (
+                  <div className="flex items-center justify-between px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200/80 text-[11px] text-slate-600">
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className={`w-2 h-2 rounded-full ${
+                          isSyncingSheets || isVerifyingSheets
+                            ? 'bg-amber-500 animate-pulse'
+                            : hasSyncedSheetsOnce
+                              ? 'bg-emerald-500'
+                              : 'bg-slate-400'
+                        }`}
+                      />
+                      <span>
+                        {isSyncingSheets || isVerifyingSheets
+                          ? 'Menyinkronkan akun dari Google Sheet...'
+                          : hasSyncedSheetsOnce
+                            ? 'Password terhubung ke Google Sheet'
+                            : 'Menunggu sinkronisasi Google Sheet...'}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => syncAccountsNow()}
+                      disabled={isSyncingSheets || isVerifyingSheets}
+                      className="text-indigo-600 hover:text-indigo-800 font-bold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                      title="Muat ulang password terbaru dari Google Sheet"
+                    >
+                      <RefreshCw
+                        className={`w-3 h-3 ${isSyncingSheets || isVerifyingSheets ? 'animate-spin' : ''}`}
+                      />
+                      <span>Refresh</span>
+                    </button>
+                  </div>
+                )}
               </form>
             )}
 
@@ -432,13 +597,19 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                   <div className="relative">
                     <User className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
                     <input
+                      ref={adminUserRef}
                       id="input-admin-user"
+                      name="username"
                       type="text"
                       value={adminUsername}
                       onChange={(e) => setAdminUsername(e.target.value)}
                       placeholder="Masukkan username anda"
-                      className="w-full text-xs font-medium pl-9 pr-3 py-2.5 rounded-lg border border-slate-200 bg-white focus:outline-hidden focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600 transition-all text-slate-900"
+                      className="w-full text-base sm:text-sm font-medium pl-9 pr-3 py-2.5 rounded-lg border border-slate-200 bg-white focus:outline-hidden focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600 transition-all text-slate-900"
                       autoComplete="username"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      enterKeyHint="next"
                     />
                   </div>
                 </div>
@@ -451,13 +622,19 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                   <div className="relative">
                     <KeyRound className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
                     <input
+                      ref={adminPassRef}
                       id="input-admin-password"
+                      name="password"
                       type={showAdminPassword ? 'text' : 'password'}
                       value={adminPassword}
                       onChange={(e) => setAdminPassword(e.target.value)}
                       placeholder="Masukkan password anda"
-                      className="w-full text-xs font-medium pl-9 pr-10 py-2.5 rounded-lg border border-slate-200 bg-white focus:outline-hidden focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600 transition-all text-slate-900"
+                      className="w-full text-base sm:text-sm font-medium pl-9 pr-10 py-2.5 rounded-lg border border-slate-200 bg-white focus:outline-hidden focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600 transition-all text-slate-900"
                       autoComplete="current-password"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      enterKeyHint="go"
                     />
                     <button
                       type="button"
@@ -515,7 +692,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
         {/* Info footer */}
         <p className="text-center text-[11px] text-slate-400">
-          © {new Date().getFullYear()} Acarya Kost • Sistem Pembayaran & Manajemen Kamar
+          © {new Date().getFullYear()} Acarya Kost • Sistem Pembayaran & Manajemen Kamar • v2.2 Sheet Sync Ready
         </p>
       </div>
 
@@ -571,7 +748,10 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                       value={adminVerifyPassword}
                       onChange={(e) => setAdminVerifyPassword(e.target.value)}
                       placeholder="Masukkan password admin"
-                      className="w-full text-xs font-medium pl-9 pr-10 py-2.5 rounded-lg border border-slate-200 bg-white focus:outline-hidden focus:border-amber-600 focus:ring-1 focus:ring-amber-600 transition-all text-slate-900"
+                      className="w-full text-base sm:text-sm font-medium pl-9 pr-10 py-2.5 rounded-lg border border-slate-200 bg-white focus:outline-hidden focus:border-amber-600 focus:ring-1 focus:ring-amber-600 transition-all text-slate-900"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
                       autoFocus
                     />
                     <button

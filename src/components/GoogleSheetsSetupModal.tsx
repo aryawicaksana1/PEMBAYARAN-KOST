@@ -118,12 +118,17 @@ export const GoogleSheetsSetupModal: React.FC<GoogleSheetsSetupModalProps> = ({
               r.roomNumber.replace(/\D/g, '').padStart(2, '0') ===
                 t.roomNumber.replace(/\D/g, '').padStart(2, '0')
           );
-          if (match && match.monthlyRentRate > 0) {
+          if (match) {
             updatedCount++;
             return {
               ...t,
-              monthlyRentRate: match.monthlyRentRate,
+              monthlyRentRate:
+                match.monthlyRentRate && match.monthlyRentRate > 0
+                  ? match.monthlyRentRate
+                  : t.monthlyRentRate,
               rentDueDateDay: match.rentDueDateDay || t.rentDueDateDay,
+              username: match.username || t.username,
+              password: match.password || t.password,
             };
           }
           return t;

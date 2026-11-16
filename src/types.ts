@@ -194,6 +194,10 @@ export interface RoomRateSyncItem {
   machineFee?: number;
   rentDueDateDay?: number;
   notes?: string;
+  username?: string;
+  password?: string;
+  phone?: string;
+  isOccupied?: boolean;
 }
 
 export interface AppSettings {

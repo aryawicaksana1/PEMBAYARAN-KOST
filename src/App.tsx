@@ -23,7 +23,15 @@ import {
 import {
   recalculateTenantsWithSheetData,
   isDummySeedPaymentId,
+  normalizeRoomDigits,
 } from './utils/paymentStatusCalculator';
+import { sanitizeAuthInput } from './utils/authHelper';
+import {
+  safeStorageGet,
+  safeStorageSet,
+  safeStorageRemove,
+  safeSaveRecordsToStorage,
+} from './utils/storageHelper';
 
 const RentPaymentModal = lazy(() =>
   import('./components/RentPaymentModal').then((m) => ({ default: m.RentPaymentModal }))
@@ -77,7 +85,7 @@ import {
 export default function App() {
   // Load state from localStorage or defaults with automatic migration
   const [settings, setSettings] = useState<AppSettings>(() => {
-    const saved = localStorage.getItem('kostpay_settings');
+    const saved = safeStorageGet('kostpay_settings');
     if (saved) {
       try {
         const parsed: AppSettings = JSON.parse(saved);
@@ -145,7 +153,7 @@ export default function App() {
 
   // User Authentication Session (either room tenant or admin)
   const [authSession, setAuthSession] = useState<AuthSession | null>(() => {
-    const saved = localStorage.getItem('kostpay_auth_session_v2');
+    const saved = safeStorageGet('kostpay_auth_session_v2');
     if (saved) {
       try {
         return JSON.parse(saved);
@@ -154,7 +162,7 @@ export default function App() {
       }
     }
     // Backward compatibility for admin
-    if (localStorage.getItem('kostpay_auth_user') === 'bosacarya') {
+    if (safeStorageGet('kostpay_auth_user') === 'bosacarya') {
       return {
         role: 'admin',
         username: 'bosacarya',
@@ -183,31 +191,16 @@ export default function App() {
     if (list.some((t) => oldDummyNames.includes((t.name || '').trim().toLowerCase()))) {
       return true;
     }
-    // Pastikan data penghuni asli Acarya 2 dari file HTML pengguna sudah lengkap
-    const r05 = list.find((t) => t.id === 't-ac2-05');
-    const r10 = list.find((t) => t.id === 't-ac2-10');
-    const r15 = list.find((t) => t.id === 't-ac2-15');
-    const r17 = list.find((t) => t.id === 't-ac2-17');
-    const r18 = list.find((t) => t.id === 't-ac2-18');
-    if (
-      !r05 || r05.name.includes('Tersedia') ||
-      !r10 || r10.name.includes('Tersedia') ||
-      !r15 || r15.name.includes('Tersedia') ||
-      !r17 || r17.name.includes('Tersedia') ||
-      !r18 || r18.name.includes('Tersedia')
-    ) {
-      return true;
-    }
     return false;
   };
 
   const [tenants, setTenants] = useState<TenantProfile[]>(() => {
-    const saved = localStorage.getItem('kostpay_tenants_v6');
+    const saved = safeStorageGet('kostpay_tenants_v6');
     if (saved) {
       try {
         const parsed: TenantProfile[] = JSON.parse(saved);
         if (isStaleTenantList(parsed)) {
-          localStorage.setItem('kostpay_tenants_v6', JSON.stringify(DEFAULT_TENANTS));
+          safeStorageSet('kostpay_tenants_v6', JSON.stringify(DEFAULT_TENANTS));
           return DEFAULT_TENANTS;
         }
         return parsed.map((t) => {
@@ -222,7 +215,7 @@ export default function App() {
         return DEFAULT_TENANTS;
       }
     }
-    localStorage.setItem('kostpay_tenants_v6', JSON.stringify(DEFAULT_TENANTS));
+    safeStorageSet('kostpay_tenants_v6', JSON.stringify(DEFAULT_TENANTS));
     return DEFAULT_TENANTS;
   });
 
@@ -230,21 +223,21 @@ export default function App() {
   useEffect(() => {
     if (isStaleTenantList(tenants)) {
       setTenants(DEFAULT_TENANTS);
-      localStorage.setItem('kostpay_tenants_v6', JSON.stringify(DEFAULT_TENANTS));
+      safeStorageSet('kostpay_tenants_v6', JSON.stringify(DEFAULT_TENANTS));
     }
   }, [tenants]);
 
   const [currentTenant, setCurrentTenant] = useState<TenantProfile>(() => {
     if (authSession?.role === 'tenant' && authSession.tenantId) {
-      const match = DEFAULT_TENANTS.find((t) => t.id === authSession.tenantId);
+      const match = tenants.find((t) => t.id === authSession.tenantId);
       if (match) return match;
     }
-    const defaultArya = DEFAULT_TENANTS.find((t) => t.name.includes('ARYA WICAKSANA'));
-    return defaultArya || DEFAULT_TENANTS[0];
+    const defaultArya = tenants.find((t) => t.name.includes('ARYA WICAKSANA'));
+    return defaultArya || tenants[0] || DEFAULT_TENANTS[0];
   });
 
   const [kostPayments, setKostPayments] = useState<KostPaymentRecord[]>(() => {
-    const saved = localStorage.getItem('kostpay_kost_payments_v2');
+    const saved = safeStorageGet('kostpay_kost_payments_v2');
     if (saved) {
       try {
         const parsed: KostPaymentRecord[] = JSON.parse(saved);
@@ -253,7 +246,7 @@ export default function App() {
         }
         const cleaned = parsed.filter((p) => p && !isDummySeedPaymentId(p.id));
         if (cleaned.length !== parsed.length) {
-          localStorage.setItem('kostpay_kost_payments_v2', JSON.stringify(cleaned));
+          safeSaveRecordsToStorage('kostpay_kost_payments_v2', cleaned);
         }
         return cleaned;
       } catch {
@@ -264,7 +257,7 @@ export default function App() {
   });
 
   const [electricityPayments, setElectricityPayments] = useState<ElectricityRecord[]>(() => {
-    const saved = localStorage.getItem('kostpay_elec_payments_v2');
+    const saved = safeStorageGet('kostpay_elec_payments_v2');
     if (saved) {
       try {
         const parsed: ElectricityRecord[] = JSON.parse(saved);
@@ -273,7 +266,7 @@ export default function App() {
         }
         const cleaned = parsed.filter((p) => p && !isDummySeedPaymentId(p.id));
         if (cleaned.length !== parsed.length) {
-          localStorage.setItem('kostpay_elec_payments_v2', JSON.stringify(cleaned));
+          safeSaveRecordsToStorage('kostpay_elec_payments_v2', cleaned);
         }
         return cleaned;
       } catch {
@@ -306,7 +299,7 @@ export default function App() {
         });
 
         if (hasStatusChange) {
-          localStorage.setItem('kostpay_tenants_v6', JSON.stringify(recalculated));
+          safeStorageSet('kostpay_tenants_v6', JSON.stringify(recalculated));
           setCurrentTenant((prevCur) => {
             const matched = recalculated.find((t) => t.id === prevCur.id);
             return matched || prevCur;
@@ -323,7 +316,7 @@ export default function App() {
   }, [kostPayments, electricityPayments]);
 
   const [facilities, setFacilities] = useState<FacilityMaintenance[]>(() => {
-    const saved = localStorage.getItem('kostpay_facilities_v2');
+    const saved = safeStorageGet('kostpay_facilities_v2');
     if (saved) {
       try {
         const parsed: FacilityMaintenance[] = JSON.parse(saved);
@@ -339,7 +332,7 @@ export default function App() {
   });
 
   const [roomInspections, setRoomInspections] = useState<RoomInspection[]>(() => {
-    const saved = localStorage.getItem('kostpay_inspections_v3');
+    const saved = safeStorageGet('kostpay_inspections_v3');
     if (saved) {
       try {
         const parsed: RoomInspection[] = JSON.parse(saved);
@@ -355,7 +348,7 @@ export default function App() {
   });
 
   const [acServices, setAcServices] = useState<AcServiceRecord[]>(() => {
-    const saved = localStorage.getItem('kostpay_ac_services_v3');
+    const saved = safeStorageGet('kostpay_ac_services_v3');
     if (saved) {
       try {
         const parsed: AcServiceRecord[] = JSON.parse(saved);
@@ -373,7 +366,7 @@ export default function App() {
   // Daftar ID jadwal yang sudah ditandai selesai lalu dihapus dari tampilan WebApp (namun tetap tersimpan di Google Sheet)
   const getHiddenScheduleIds = (): Set<string> => {
     try {
-      const raw = localStorage.getItem('kostpay_hidden_schedule_ids_v1');
+      const raw = safeStorageGet('kostpay_hidden_schedule_ids_v1');
       if (raw) {
         const arr = JSON.parse(raw);
         if (Array.isArray(arr)) return new Set(arr);
@@ -388,7 +381,7 @@ export default function App() {
     if (!id) return;
     const set = getHiddenScheduleIds();
     set.add(id);
-    localStorage.setItem('kostpay_hidden_schedule_ids_v1', JSON.stringify(Array.from(set)));
+    safeStorageSet('kostpay_hidden_schedule_ids_v1', JSON.stringify(Array.from(set)));
   };
 
   const removeHiddenScheduleId = (id: string) => {
@@ -396,7 +389,7 @@ export default function App() {
     const set = getHiddenScheduleIds();
     if (set.has(id)) {
       set.delete(id);
-      localStorage.setItem('kostpay_hidden_schedule_ids_v1', JSON.stringify(Array.from(set)));
+      safeStorageSet('kostpay_hidden_schedule_ids_v1', JSON.stringify(Array.from(set)));
     }
   };
 
@@ -414,15 +407,15 @@ export default function App() {
   // Sync login status to localStorage
   useEffect(() => {
     if (authSession) {
-      localStorage.setItem('kostpay_auth_session_v2', JSON.stringify(authSession));
+      safeStorageSet('kostpay_auth_session_v2', JSON.stringify(authSession));
       if (authSession.role === 'admin') {
-        localStorage.setItem('kostpay_auth_user', 'bosacarya');
+        safeStorageSet('kostpay_auth_user', 'bosacarya');
       } else {
-        localStorage.removeItem('kostpay_auth_user');
+        safeStorageRemove('kostpay_auth_user');
       }
     } else {
-      localStorage.removeItem('kostpay_auth_session_v2');
-      localStorage.removeItem('kostpay_auth_user');
+      safeStorageRemove('kostpay_auth_session_v2');
+      safeStorageRemove('kostpay_auth_user');
     }
   }, [authSession]);
 
@@ -485,17 +478,47 @@ export default function App() {
   const handleLogout = () => {
     setAuthSession(null);
     setIsAdminMode(false);
-    localStorage.removeItem('kostpay_auth_session_v2');
-    localStorage.removeItem('kostpay_auth_user');
+    safeStorageRemove('kostpay_auth_session_v2');
+    safeStorageRemove('kostpay_auth_user');
     setActiveScreen('home');
   };
 
-  const handleUpdateTenant = (updated: TenantProfile) => {
-    setTenants((prev) => {
-      const updatedList = prev.map((t) => (t.id === updated.id ? updated : t));
-      localStorage.setItem('kostpay_tenants_v6', JSON.stringify(updatedList));
-      return updatedList;
-    });
+  const lastAccountEditAtRef = useRef<Record<string, number>>({});
+  const [isGoogleSheetAccountSyncReady, setIsGoogleSheetAccountSyncReady] = useState<boolean | null>(
+    null
+  );
+  const [hasSyncedSheetsOnce, setHasSyncedSheetsOnce] = useState<boolean>(false);
+  const hasAutoSeededAccountsRef = useRef<boolean>(false);
+  const tenantsRef = useRef<TenantProfile[]>(tenants);
+  const kostPaymentsRef = useRef<KostPaymentRecord[]>(kostPayments);
+  const electricityPaymentsRef = useRef<ElectricityRecord[]>(electricityPayments);
+
+  useEffect(() => {
+    tenantsRef.current = tenants;
+  }, [tenants]);
+
+  useEffect(() => {
+    kostPaymentsRef.current = kostPayments;
+  }, [kostPayments]);
+
+  useEffect(() => {
+    electricityPaymentsRef.current = electricityPayments;
+  }, [electricityPayments]);
+
+  const handleUpdateTenant = async (
+    updated: TenantProfile
+  ): Promise<{
+    localSaved: boolean;
+    syncedToSheets: boolean;
+    hasAccountsSync: boolean;
+    message: string;
+  }> => {
+    lastAccountEditAtRef.current[updated.id] = Date.now();
+    const updatedListSnapshot = tenantsRef.current.map((t) => (t.id === updated.id ? updated : t));
+    tenantsRef.current = updatedListSnapshot;
+    let nextTenantsSnapshot: TenantProfile[] = updatedListSnapshot;
+    setTenants(updatedListSnapshot);
+    safeStorageSet('kostpay_tenants_v6', JSON.stringify(updatedListSnapshot));
     if (currentTenant.id === updated.id) {
       setCurrentTenant(updated);
     }
@@ -526,7 +549,7 @@ export default function App() {
         return ac;
       });
       if (acChanged) {
-        localStorage.setItem('kostpay_ac_services_v3', JSON.stringify(nextAc));
+        safeStorageSet('kostpay_ac_services_v3', JSON.stringify(nextAc));
       }
       return acChanged ? nextAc : prev;
     });
@@ -552,20 +575,21 @@ export default function App() {
         return r;
       });
       if (inspChanged) {
-        localStorage.setItem('kostpay_inspections_v3', JSON.stringify(nextInsp));
+        safeStorageSet('kostpay_inspections_v3', JSON.stringify(nextInsp));
       }
       return inspChanged ? nextInsp : prev;
     });
 
-    // Langsung kirim perubahan nama & tarif penghuni dari WebApp ke Google Sheet (DAFTAR_TARIF_KAMAR & Tab Kamar)
+    // Langsung kirim perubahan nama, tarif, serta username/password kamar dari WebApp ke Google Sheet
     try {
       const sheetFormattedName =
         updated.isOccupied && updated.name && updated.name !== '-' && !updated.name.toLowerCase().includes('tersedia')
           ? updated.name
           : `Kamar ${updated.roomNumber} (Tersedia)`;
 
-      if (settings.googleWebAppUrl) {
-        sendToGoogleSheets(settings.googleWebAppUrl, {
+      const targetUrl = settings.googleWebAppUrl || PERMANENT_GOOGLE_WEBAPP_URL;
+      if (targetUrl) {
+        const res = await sendToGoogleSheets(targetUrl, {
           action: 'update_room_rates',
           rates: [
             {
@@ -574,19 +598,89 @@ export default function App() {
               tenantName: sheetFormattedName,
               monthlyRentRate: updated.monthlyRentRate,
               rentDueDateDay: updated.rentDueDateDay,
+              username: updated.username || `kamar${updated.roomNumber}`,
+              password: updated.password,
+              phone: updated.phone,
+              isOccupied: updated.isOccupied,
             },
           ],
           tenant: updated,
         });
+        const hasAcc = Boolean(res.data?.hasAccountsSync);
+        if (res.data && typeof res.data.hasAccountsSync === 'boolean') {
+          setIsGoogleSheetAccountSyncReady(hasAcc);
+        }
+        if (nextTenantsSnapshot.length > 0) {
+          safeStorageSet('kostpay_tenants_v6', JSON.stringify(nextTenantsSnapshot));
+        }
+        return {
+          localSaved: true,
+          syncedToSheets: res.success,
+          hasAccountsSync: hasAcc,
+          message: res.message,
+        };
       }
-    } catch {
-      // ignore storage errors
+    } catch (err: any) {
+      return {
+        localSaved: true,
+        syncedToSheets: false,
+        hasAccountsSync: false,
+        message: err?.message || 'Tersimpan secara lokal, namun gagal terhubung ke Google Sheet.',
+      };
     }
+
+    return {
+      localSaved: true,
+      syncedToSheets: false,
+      hasAccountsSync: false,
+      message: 'Tersimpan di perangkat ini.',
+    };
+  };
+
+  const handleSyncAllAccountsToSheets = async (): Promise<{
+    success: boolean;
+    hasAccountsSync: boolean;
+    message: string;
+  }> => {
+    const targetUrl = settings.googleWebAppUrl || PERMANENT_GOOGLE_WEBAPP_URL;
+    if (!targetUrl) {
+      return {
+        success: false,
+        hasAccountsSync: false,
+        message: 'URL Google Web App belum diatur.',
+      };
+    }
+    const res = await sendToGoogleSheets(targetUrl, {
+      action: 'sync_all_room_accounts',
+      rates: tenants.map((t) => ({
+        kostLocation: t.kostLocation || 'acarya_1',
+        roomNumber: t.roomNumber,
+        tenantName:
+          t.isOccupied && t.name && t.name !== '-' && !t.name.toLowerCase().includes('tersedia')
+            ? t.name
+            : `Kamar ${t.roomNumber} (Tersedia)`,
+        monthlyRentRate: t.monthlyRentRate,
+        rentDueDateDay: t.rentDueDateDay,
+        username: t.username || `kamar${t.roomNumber}`,
+        password: t.password,
+        phone: t.phone,
+        isOccupied: t.isOccupied,
+      })),
+    });
+    const hasAcc = Boolean(res.data?.hasAccountsSync);
+    if (res.data && typeof res.data.hasAccountsSync === 'boolean') {
+      setIsGoogleSheetAccountSyncReady(hasAcc);
+    }
+    return {
+      success: res.success,
+      hasAccountsSync: hasAcc,
+      message: res.message,
+    };
   };
 
   const handleUpdateAllTenants = (updatedTenants: TenantProfile[]) => {
     setTenants(updatedTenants);
-    localStorage.setItem('kostpay_tenants_v6', JSON.stringify(updatedTenants));
+    safeStorageSet('kostpay_tenants_v6', JSON.stringify(updatedTenants));
     // Also update currentTenant if it was among updated
     const updatedCurrent = updatedTenants.find((t) => t.id === currentTenant.id);
     if (updatedCurrent) {
@@ -605,6 +699,10 @@ export default function App() {
               : `Kamar ${t.roomNumber} (Tersedia)`,
           monthlyRentRate: t.monthlyRentRate,
           rentDueDateDay: t.rentDueDateDay,
+          username: t.username || `kamar${t.roomNumber}`,
+          password: t.password,
+          phone: t.phone,
+          isOccupied: t.isOccupied,
         })),
       });
     }
@@ -612,12 +710,14 @@ export default function App() {
 
   const [isSyncingSheets, setIsSyncingSheets] = useState<boolean>(false);
 
-  // Fungsi Sinkronisasi (Status Pembayaran Sewa & Listrik, Tarif Kamar, Jadwal_Servis_AC, Jadwal_Fasilitas, Jadwal_Cek_Kamar)
+  // Fungsi Sinkronisasi (Status Pembayaran Sewa & Listrik, Tarif Kamar, Akun Login Kamar, Jadwal_Servis_AC, Jadwal_Fasilitas, Jadwal_Cek_Kamar)
   // Status pembayaran sewa & listrik diambil dari data Google Sheet. Jika data di Google Sheet kosong, status pembayaran otomatis menyesuaikan.
   const handleSyncAllFromGoogleSheets = async (): Promise<{
     success: boolean;
     hasSchedulesSync?: boolean;
     hasPaymentsSync?: boolean;
+    hasAccountsSync?: boolean;
+    tenants?: TenantProfile[];
     message: string;
   }> => {
     if (!settings.googleWebAppUrl) {
@@ -626,24 +726,26 @@ export default function App() {
     setIsSyncingSheets(true);
     try {
       const res = await fetchRoomRatesFromGoogleSheets(settings.googleWebAppUrl);
+      let syncedTenantsSnapshot: TenantProfile[] | undefined;
+
       if (res.success) {
-        let nextKostPayments = kostPayments;
-        let nextElectricityPayments = electricityPayments;
+        setIsGoogleSheetAccountSyncReady(Boolean(res.hasAccountsSync));
+        let nextKostPayments = kostPaymentsRef.current;
+        let nextElectricityPayments = electricityPaymentsRef.current;
 
         // Sinkronisasi data Pembayaran Sewa dari Google Sheet (jika tersedia dari endpoint doGet)
         if (Array.isArray(res.kostPayments)) {
           const sheetKostList = res.kostPayments.filter((p) => p && !isDummySeedPaymentId(p.id));
-          setKostPayments((prev) => {
-            const sheetIds = new Set(sheetKostList.map((p) => p.id));
-            // Pertahankan transaksi pending lokal yang baru dikirim dan belum masuk di pembacaan sheet
-            const localPending = prev.filter(
-              (p) => p.status === 'pending' && !sheetIds.has(p.id) && !isDummySeedPaymentId(p.id)
-            );
-            const mergedKost = [...localPending, ...sheetKostList];
-            nextKostPayments = mergedKost;
-            localStorage.setItem('kostpay_kost_payments_v2', JSON.stringify(mergedKost));
-            return mergedKost;
-          });
+          const sheetIds = new Set(sheetKostList.map((p) => p.id));
+          // Pertahankan transaksi pending lokal yang baru dikirim dan belum masuk di pembacaan sheet
+          const localPending = kostPaymentsRef.current.filter(
+            (p) => p.status === 'pending' && !sheetIds.has(p.id) && !isDummySeedPaymentId(p.id)
+          );
+          const mergedKost = [...localPending, ...sheetKostList];
+          nextKostPayments = mergedKost;
+          kostPaymentsRef.current = mergedKost;
+          setKostPayments(mergedKost);
+          safeSaveRecordsToStorage('kostpay_kost_payments_v2', mergedKost);
         }
 
         // Sinkronisasi data Pembayaran Listrik dari Google Sheet (jika tersedia dari endpoint doGet)
@@ -651,51 +753,102 @@ export default function App() {
           const sheetElecList = res.electricityPayments.filter(
             (p) => p && !isDummySeedPaymentId(p.id)
           );
-          setElectricityPayments((prev) => {
-            const sheetIds = new Set(sheetElecList.map((p) => p.id));
-            const localPending = prev.filter(
-              (p) => p.status === 'pending' && !sheetIds.has(p.id) && !isDummySeedPaymentId(p.id)
-            );
-            const mergedElec = [...localPending, ...sheetElecList];
-            nextElectricityPayments = mergedElec;
-            localStorage.setItem('kostpay_elec_payments_v2', JSON.stringify(mergedElec));
-            return mergedElec;
-          });
+          const sheetIds = new Set(sheetElecList.map((p) => p.id));
+          const localPending = electricityPaymentsRef.current.filter(
+            (p) => p.status === 'pending' && !sheetIds.has(p.id) && !isDummySeedPaymentId(p.id)
+          );
+          const mergedElec = [...localPending, ...sheetElecList];
+          nextElectricityPayments = mergedElec;
+          electricityPaymentsRef.current = mergedElec;
+          setElectricityPayments(mergedElec);
+          safeSaveRecordsToStorage('kostpay_elec_payments_v2', mergedElec);
         }
 
-        // Perbarui tarif kamar & hitung ulang status sewa dan listrik berdasarkan data Google Sheet dan bulan/tanggal berjalan
-        setTenants((prevTenants) => {
-          const rateMerged = prevTenants.map((t) => {
+        // Perbarui tarif kamar, akun login (dari Google Sheet), & hitung ulang status sewa dan listrik secara sinkron
+        const rateMerged = tenantsRef.current.map((t) => {
+          const match = res.rates?.find(
+            (r) =>
+              normalizeRoomDigits(r.roomNumber) === normalizeRoomDigits(t.roomNumber) &&
+              (!r.kostLocation || r.kostLocation === t.kostLocation)
+          );
+          if (match) {
+            const recentEditAt = lastAccountEditAtRef.current[t.id] || 0;
+            const isRecentlyEdited = Date.now() - recentEditAt < 45000;
+            const sheetUser = match.username ? sanitizeAuthInput(match.username) : '';
+            const sheetPass = match.password ? sanitizeAuthInput(match.password) : '';
+            return {
+              ...t,
+              monthlyRentRate:
+                match.monthlyRentRate && match.monthlyRentRate > 0
+                  ? match.monthlyRentRate
+                  : t.monthlyRentRate,
+              rentDueDateDay: match.rentDueDateDay || t.rentDueDateDay,
+              username: isRecentlyEdited ? t.username : sheetUser || t.username,
+              password: isRecentlyEdited ? t.password : sheetPass || t.password,
+              phone: match.phone !== undefined ? match.phone : t.phone,
+              isOccupied: match.isOccupied !== undefined ? match.isOccupied : t.isOccupied,
+            };
+          }
+          return t;
+        });
+
+        const recalculated = recalculateTenantsWithSheetData(
+          rateMerged,
+          nextKostPayments,
+          nextElectricityPayments,
+          new Date()
+        );
+
+        syncedTenantsSnapshot = recalculated;
+        tenantsRef.current = recalculated;
+        setTenants(recalculated);
+        safeStorageSet('kostpay_tenants_v6', JSON.stringify(recalculated));
+        setCurrentTenant((prevCurrent) => {
+          const updatedCurrent = recalculated.find((t) => t.id === prevCurrent.id);
+          return updatedCurrent || prevCurrent;
+        });
+        setHasSyncedSheetsOnce(true);
+
+        // Jika login sebagai Admin dan masih ada kamar yang belum tercatat di tab AKUN_LOGIN_KAMAR,
+        // lengkapi baris yang kosong tanpa pernah menimpa password yang sudah ada di Google Sheet.
+        if (
+          authSession?.role === 'admin' &&
+          res.hasAccountsSync &&
+          !hasAutoSeededAccountsRef.current &&
+          Array.isArray(res.rates)
+        ) {
+          hasAutoSeededAccountsRef.current = true;
+          const missingAccounts = recalculated.filter((t) => {
             const match = res.rates?.find(
               (r) =>
-                r.roomNumber.toString().trim() === t.roomNumber.toString().trim() &&
+                normalizeRoomDigits(r.roomNumber) === normalizeRoomDigits(t.roomNumber) &&
                 (!r.kostLocation || r.kostLocation === t.kostLocation)
             );
-            if (match && match.monthlyRentRate && match.monthlyRentRate > 0) {
-              return {
-                ...t,
-                monthlyRentRate: match.monthlyRentRate,
-                rentDueDateDay: match.rentDueDateDay || t.rentDueDateDay,
-              };
-            }
-            return t;
+            return !match?.password || !sanitizeAuthInput(match.password);
           });
-
-          const recalculated = recalculateTenantsWithSheetData(
-            rateMerged,
-            nextKostPayments,
-            nextElectricityPayments,
-            new Date()
-          );
-
-          localStorage.setItem('kostpay_tenants_v6', JSON.stringify(recalculated));
-          setCurrentTenant((prevCurrent) => {
-            const updatedCurrent = recalculated.find((t) => t.id === prevCurrent.id);
-            return updatedCurrent || prevCurrent;
-          });
-
-          return recalculated;
-        });
+          if (missingAccounts.length > 0) {
+            const targetUrl = settings.googleWebAppUrl || PERMANENT_GOOGLE_WEBAPP_URL;
+            sendToGoogleSheets(targetUrl, {
+              action: 'sync_all_room_accounts',
+              rates: missingAccounts.map((t) => ({
+                kostLocation: t.kostLocation || 'acarya_1',
+                roomNumber: t.roomNumber,
+                tenantName:
+                  t.isOccupied && t.name && t.name !== '-' && !t.name.toLowerCase().includes('tersedia')
+                    ? t.name
+                    : `Kamar ${t.roomNumber} (Tersedia)`,
+                monthlyRentRate: t.monthlyRentRate,
+                rentDueDateDay: t.rentDueDateDay,
+                username: t.username || `kamar${t.roomNumber}`,
+                password: t.password,
+                phone: t.phone,
+                isOccupied: t.isOccupied,
+              })),
+            }).catch(() => {
+              hasAutoSeededAccountsRef.current = false;
+            });
+          }
+        }
 
         // Sinkronisasi data jadwal dari Google Sheet, dengan tetap menyembunyikan jadwal selesai yang sudah dihapus dari tampilan WebApp
         const hiddenIds = getHiddenScheduleIds();
@@ -705,7 +858,7 @@ export default function App() {
             (item) => !(hiddenIds.has(item.id) && item.status === 'normal')
           );
           setAcServices(visibleAc);
-          localStorage.setItem('kostpay_ac_services_v3', JSON.stringify(visibleAc));
+          safeStorageSet('kostpay_ac_services_v3', JSON.stringify(visibleAc));
         }
 
         if (Array.isArray(res.facilities)) {
@@ -713,7 +866,7 @@ export default function App() {
             (item) => !(hiddenIds.has(item.id) && item.status === 'selesai')
           );
           setFacilities(visibleFac);
-          localStorage.setItem('kostpay_facilities_v2', JSON.stringify(visibleFac));
+          safeStorageSet('kostpay_facilities_v2', JSON.stringify(visibleFac));
         }
 
         if (Array.isArray(res.roomInspections)) {
@@ -721,13 +874,15 @@ export default function App() {
             (item) => !(hiddenIds.has(item.id) && item.status === 'layak')
           );
           setRoomInspections(visibleInsp);
-          localStorage.setItem('kostpay_inspections_v3', JSON.stringify(visibleInsp));
+          safeStorageSet('kostpay_inspections_v3', JSON.stringify(visibleInsp));
         }
       }
       return {
         success: res.success,
         hasSchedulesSync: res.hasSchedulesSync,
         hasPaymentsSync: res.hasPaymentsSync,
+        hasAccountsSync: res.hasAccountsSync,
+        tenants: syncedTenantsSnapshot,
         message: res.message,
       };
     } catch (err: any) {
@@ -775,6 +930,13 @@ export default function App() {
 
   const hasInitialSyncedRef = useRef(false);
 
+  // Saat Admin masuk, sinkronkan dan pastikan seluruh 29 akun kamar terhubung dengan Google Sheet
+  useEffect(() => {
+    if (authSession?.role === 'admin' && !hasAutoSeededAccountsRef.current && settings.googleWebAppUrl) {
+      handleSyncAllFromGoogleSheets();
+    }
+  }, [authSession?.role]);
+
   // Auto-sync dari Google Sheet saat aplikasi pertama kali dibuka (tanpa mendorong data dummy ke Google Sheet)
   useEffect(() => {
     const targetUrl = PERMANENT_GOOGLE_WEBAPP_URL;
@@ -815,31 +977,31 @@ export default function App() {
 
   // Persistence to localStorage
   useEffect(() => {
-    localStorage.setItem('kostpay_settings', JSON.stringify(settings));
+    safeStorageSet('kostpay_settings', JSON.stringify(settings));
   }, [settings]);
 
   useEffect(() => {
-    localStorage.setItem('kostpay_tenants_v6', JSON.stringify(tenants));
+    safeStorageSet('kostpay_tenants_v6', JSON.stringify(tenants));
   }, [tenants]);
 
   useEffect(() => {
-    localStorage.setItem('kostpay_kost_payments_v2', JSON.stringify(kostPayments));
+    safeSaveRecordsToStorage('kostpay_kost_payments_v2', kostPayments);
   }, [kostPayments]);
 
   useEffect(() => {
-    localStorage.setItem('kostpay_elec_payments_v2', JSON.stringify(electricityPayments));
+    safeSaveRecordsToStorage('kostpay_elec_payments_v2', electricityPayments);
   }, [electricityPayments]);
 
   useEffect(() => {
-    localStorage.setItem('kostpay_facilities_v2', JSON.stringify(facilities));
+    safeStorageSet('kostpay_facilities_v2', JSON.stringify(facilities));
   }, [facilities]);
 
   useEffect(() => {
-    localStorage.setItem('kostpay_inspections_v3', JSON.stringify(roomInspections));
+    safeStorageSet('kostpay_inspections_v3', JSON.stringify(roomInspections));
   }, [roomInspections]);
 
   useEffect(() => {
-    localStorage.setItem('kostpay_ac_services_v3', JSON.stringify(acServices));
+    safeStorageSet('kostpay_ac_services_v3', JSON.stringify(acServices));
   }, [acServices]);
 
   // Handler: Rent Payment Submitted — Langsung kirim ke Google Sheets sekaligus simpan di aplikasi
@@ -848,7 +1010,7 @@ export default function App() {
   ): Promise<{ success: boolean; message: string }> => {
     setKostPayments((prev) => {
       const updated = [newRecord, ...prev];
-      localStorage.setItem('kostpay_kost_payments_v2', JSON.stringify(updated));
+      safeSaveRecordsToStorage('kostpay_kost_payments_v2', updated);
       return updated;
     });
 
@@ -915,7 +1077,7 @@ export default function App() {
           const synced = prev.map((p) =>
             p.id === newRecord.id ? { ...p, syncedToSheets: true } : p
           );
-          localStorage.setItem('kostpay_kost_payments_v2', JSON.stringify(synced));
+          safeSaveRecordsToStorage('kostpay_kost_payments_v2', synced);
           return synced;
         });
       }
@@ -935,7 +1097,7 @@ export default function App() {
   ): Promise<{ success: boolean; message: string }> => {
     setElectricityPayments((prev) => {
       const updated = [newRecord, ...prev];
-      localStorage.setItem('kostpay_elec_payments_v2', JSON.stringify(updated));
+      safeSaveRecordsToStorage('kostpay_elec_payments_v2', updated);
       return updated;
     });
 
@@ -952,7 +1114,7 @@ export default function App() {
           const synced = prev.map((p) =>
             p.id === newRecord.id ? { ...p, syncedToSheets: true } : p
           );
-          localStorage.setItem('kostpay_elec_payments_v2', JSON.stringify(synced));
+          safeSaveRecordsToStorage('kostpay_elec_payments_v2', synced);
           return synced;
         });
       }
@@ -1530,7 +1692,7 @@ export default function App() {
   useEffect(() => {
     if (!authSession || authSession.role !== 'tenant') return;
     try {
-      const rawSeen = localStorage.getItem('kostpay_seen_receipts_v1');
+      const rawSeen = safeStorageGet('kostpay_seen_receipts_v1');
       const seenIds: string[] = rawSeen
         ? JSON.parse(rawSeen)
         : [
@@ -1543,7 +1705,7 @@ export default function App() {
 
       if (latestVerifiedRent && !seenIds.includes(latestVerifiedRent.id)) {
         const updatedSeen = [...seenIds, latestVerifiedRent.id];
-        localStorage.setItem('kostpay_seen_receipts_v1', JSON.stringify(updatedSeen));
+        safeStorageSet('kostpay_seen_receipts_v1', JSON.stringify(updatedSeen));
         setActiveReceiptModal({
           record: latestVerifiedRent,
           type: 'kost',
@@ -1554,7 +1716,7 @@ export default function App() {
 
       if (latestVerifiedElectricity && !seenIds.includes(latestVerifiedElectricity.id)) {
         const updatedSeen = [...seenIds, latestVerifiedElectricity.id];
-        localStorage.setItem('kostpay_seen_receipts_v1', JSON.stringify(updatedSeen));
+        safeStorageSet('kostpay_seen_receipts_v1', JSON.stringify(updatedSeen));
         setActiveReceiptModal({
           record: latestVerifiedElectricity,
           type: 'electricity',
@@ -1588,11 +1750,13 @@ export default function App() {
       <LoginPage
         tenants={tenants}
         onLoginSuccess={(session, tenant) => {
-          setAuthSession(session);
+          safeStorageSet('kostpay_auth_session_v2', JSON.stringify(session));
           if (session.role === 'admin') {
+            safeStorageSet('kostpay_auth_user', 'bosacarya');
             setIsAdminMode(true);
             setActiveScreen('home');
           } else if (tenant) {
+            safeStorageRemove('kostpay_auth_user');
             setCurrentTenant(tenant);
             if (tenant.kostLocation) {
               setSelectedLocation(tenant.kostLocation);
@@ -1600,8 +1764,19 @@ export default function App() {
             setIsAdminMode(false);
             setActiveScreen('home');
           }
+          setAuthSession(session);
         }}
         selectedLocation={selectedLocation}
+        onSyncFromSheets={async () => {
+          const r = await handleSyncAllFromGoogleSheets();
+          return {
+            tenants: r.tenants || null,
+            success: r.success,
+            message: r.message,
+          };
+        }}
+        isSyncingSheets={isSyncingSheets}
+        hasSyncedSheetsOnce={hasSyncedSheetsOnce}
       />
     );
   }
@@ -1806,6 +1981,10 @@ export default function App() {
             onOpenGoogleSheetsModal={() => setActiveScreen('google_sheets')}
             onOpenWhatsAppModal={() => setActiveScreen('pengingat_wa')}
             onUpdateTenant={handleUpdateTenant}
+            isGoogleSheetAccountSyncReady={isGoogleSheetAccountSyncReady}
+            onSyncAllAccountsToSheets={handleSyncAllAccountsToSheets}
+            onSyncFromSheets={handleSyncAllFromGoogleSheets}
+            isSyncingSheets={isSyncingSheets}
             onOpenReceipt={(rec, t) => handleOpenReceipt(rec, t, false)}
           />
         )}

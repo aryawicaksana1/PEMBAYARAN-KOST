@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { motion } from 'motion/react';
 import {
   Lock,
@@ -11,6 +11,7 @@ import {
   X,
   ShieldCheck,
 } from 'lucide-react';
+import { sanitizeAuthInput, isValidAdminCredentials } from '../utils/authHelper';
 
 interface LoginModalProps {
   isOpen: boolean;
@@ -30,29 +31,37 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSuccess, setIsSuccess] = useState(false);
+  const userRef = useRef<HTMLInputElement>(null);
+  const passRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSuccess) return;
     setError(null);
 
-    const trimmedUser = username.trim();
-    const trimmedPass = password.trim();
+    const trimmedUser = sanitizeAuthInput(userRef.current?.value ?? username);
+    const trimmedPass = sanitizeAuthInput(passRef.current?.value ?? password);
 
     if (!trimmedUser || !trimmedPass) {
       setError('Silakan masukkan username dan password.');
       return;
     }
 
-    if (trimmedUser === 'bosacarya' && trimmedPass === 'bosacarya1') {
+    if (isValidAdminCredentials(trimmedUser, trimmedPass)) {
+      try {
+        (document.activeElement as HTMLElement | null)?.blur?.();
+      } catch {
+        // ignore focus blur errors
+      }
       setIsSuccess(true);
       setTimeout(() => {
         setIsSuccess(false);
         onSuccessLogin();
-      }, 600);
+      }, 450);
     } else {
-      setError('Username atau password salah. Pastikan kredensial yang dimasukkan sudah benar.');
+      setError('Username atau password salah. Pastikan huruf besar/kecil sudah benar.');
     }
   };
 
@@ -128,13 +137,19 @@ export const LoginModal: React.FC<LoginModalProps> = ({
             <div className="relative">
               <User className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
               <input
+                ref={userRef}
                 id="input-login-username"
+                name="username"
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 placeholder="Masukkan username anda"
-                className="w-full text-xs font-medium pl-9 pr-3 py-2.5 rounded-lg border border-slate-200 bg-white focus:outline-hidden focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600 transition-all text-slate-900"
+                className="w-full text-base sm:text-sm font-medium pl-9 pr-3 py-2.5 rounded-lg border border-slate-200 bg-white focus:outline-hidden focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600 transition-all text-slate-900"
                 autoComplete="username"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                enterKeyHint="next"
                 autoFocus
               />
             </div>
@@ -148,13 +163,19 @@ export const LoginModal: React.FC<LoginModalProps> = ({
             <div className="relative">
               <KeyRound className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
               <input
+                ref={passRef}
                 id="input-login-password"
+                name="password"
                 type={showPassword ? 'text' : 'password'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Masukkan password anda"
-                className="w-full text-xs font-medium pl-9 pr-10 py-2.5 rounded-lg border border-slate-200 bg-white focus:outline-hidden focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600 transition-all text-slate-900"
+                className="w-full text-base sm:text-sm font-medium pl-9 pr-10 py-2.5 rounded-lg border border-slate-200 bg-white focus:outline-hidden focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600 transition-all text-slate-900"
                 autoComplete="current-password"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                enterKeyHint="go"
               />
               <button
                 type="button"
